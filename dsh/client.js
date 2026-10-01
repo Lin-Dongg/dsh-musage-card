@@ -374,6 +374,12 @@ window.__ModuleLoader__.load({
         ? props.useSessions((s) => s)
         : null;
       const sessionId = (sessState && sessState.current) || null;
+      // 官方占用者 client-ui-cordis 也用 useSessions((state)=>state.current)，
+      // 但它同时拿 usePanelInfo/useInventory…。README 说「选中态属于布局存储」，
+      // 所以把面板态一并打出来，一次重启就能判定该从哪个存储取会话。
+      const panelInfo = (props && typeof props.usePanelInfo === "function")
+        ? props.usePanelInfo((i) => i)
+        : null;
 
       // ---- 订阅活跃会话的 model directory, 提取 active provider ----
       const [provider, setProvider] = React.useState(null);
@@ -383,10 +389,15 @@ window.__ModuleLoader__.load({
       const diag = !sessionId
         ? (!sessState
             ? "hook 缺失"
-            : "无活跃会话[keys=" + Object.keys(sessState).slice(0, 10).join("|")
+            : "会话态[keys=" + Object.keys(sessState).slice(0, 10).join("|")
               + " phase=" + sessState.phase
-              + " ids=" + (Array.isArray(sessState.ids) ? sessState.ids.length : "n/a") + "]")
+              + " ids=" + (Array.isArray(sessState.ids) ? sessState.ids.length : "n/a")
+              + "] 面板态[" + (panelInfo
+                  ? Object.keys(panelInfo).slice(0, 10).join("|") + " active=" + (panelInfo.activePanelId || "none")
+                  : "无") + "]")
         : (rawProvider ? ("provider=" + rawProvider) : "目录里没有 provider 字段");
+      // 诊断串同时打一份到 Console（卡片侧边栏窄，长文本会被省略号截断）
+      React.useEffect(() => { console.log("[musage-diag] " + diag); }, [diag]);
       React.useEffect(() => {
         if (!models || !sessionId) {
           console.log("[musage-client] skip: no models or no sessionId. models=" + !!models + " sessionId=" + sessionId + " → no fallback (没订阅到 provider)");
