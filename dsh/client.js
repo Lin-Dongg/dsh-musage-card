@@ -28,9 +28,10 @@
 //        服务面 = uiSession.current；hook 面 = useSessions + retainedBy.mainView
 //        推导（layout 包 DocumentTitle 就在 root 作用域这么做）。root 都能用。
 //      拿到 sessionId 后用 modelDirectories.directoryFor(sessionId) 取同一份 ModelDirectory。
-//   6. 恢复 footer 容器 CSS：`[data-slot="sidebar.footer.action"]` 覆盖为垂直 flex 列
-//      （压过 SlotOutlet 的 inline display:contents），卡片渲染在"移动访问"按钮上方
-//      （order -100，按钮默认 0）。
+//   6. 恢复 footer 容器 CSS：`[data-slot="sidebar.footer.action"]` 覆盖为垂直 flex 列 +
+//      `width:100%`（压过 SlotOutlet 的 inline display:contents；**宽度必须有**——容器否则
+//      hug 内容，卡片 width:100% 的百分比解析为 auto → 整组被压成窄条）。
+//      卡片渲染在"移动访问"按钮上方（order -100，按钮默认 0）。
 //
 // 功能保持不变 (继承 v0.1.1):
 //   - 跟随当前会话选中的模型自动切换 provider (含 modlens- 包装剥离);
@@ -164,6 +165,7 @@ window.__ModuleLoader__.load({
       "[data-slot=\"sidebar.footer.action\"] {",
       "  display: flex !important;   /* 覆盖 SlotOutlet 的 inline display:contents */",
       "  flex-direction: column;",
+      "  width: 100%;                /* 撑满 .footerActions（其父级全宽）——容器否则 hug 内容, 卡片被压成窄条 */",
       "}",
       "/* ---- 卡片: 半透明玻璃材质 ---- */",
       ".dsh-musage-card {",
