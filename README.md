@@ -1,9 +1,12 @@
 # dsh-musage-card
 
-`dsh-musage` 的本地二次开发版 —— 挂在 **DSH 侧边栏底部（"移动访问"按钮上方）** 的多 provider
-用量/余额玻璃卡片：跟随当前会话选中的模型**自动切换**，剩余量进度条（5h 流动绿 / 7d 流动彩）。
+[![npm version](https://img.shields.io/npm/v/dsh-musage-card)](https://www.npmjs.com/package/dsh-musage-card)
+[![GitHub](https://img.shields.io/badge/GitHub-Lin--Dongg%2Fdsh--musage--card-181717?logo=github)](https://github.com/Lin-Dongg/dsh-musage-card)
 
-**不发布到任何 registry**，通过 `file:` 依赖或手动放置安装，插件市场的更新永远不会覆盖它。
+`dsh-musage` 的二次开发版 —— 挂在 **DSH 侧边栏底部（"移动访问"按钮上方）** 的多 provider
+用量/余额玻璃卡片：跟随当前会话选中的模型**自动切换**，剩余量进度条（5h 流动绿 / 7d 流动彩 / 长周期额度紫）。
+
+**发布到 npm 与 dsh-plugin 插件市场**（见「安装」），也支持 `file:` 本地挂载（开发调试）。
 
 ## 支持的 Provider（11 家）
 
@@ -18,7 +21,7 @@
 | `siliconflow` / `siliconflow-cn` | 余额（¥，充值/总额细分） | `api.siliconflow.cn/v1/user/info` | `SILICONFLOW_API_KEY` |
 | `tavily` | 已用 / 总量 credits + 明细 | `api.tavily.com/usage` | `TAVILY_API_KEY` |
 | `zenmux` | PAYG 余额（$，充值/奖励细分） | `zenmux.ai/api/v1/management/payg/balance` | `ZENMUX_MANAGEMENT_API_KEY`（`sk-mg-v1-`） |
-| `xiaomi-token-plan-{ams,cn,sgp}` / `xiaomi` / `mimo` … | 套餐 / 补偿 / 月总额 三行 | `platform.xiaomimimo.com/api/v1/tokenPlan/usage` | **浏览器 Cookie**（key 实测被 401，自动退 Cookie；**可一键登录**，见下） |
+| `xiaomi-token-plan-{ams,cn,sgp}` / `xiaomi` / `mimo` … | 月总额 / 补偿 两行（套餐已并入月总额） | `platform.xiaomimimo.com/api/v1/tokenPlan/usage` | **浏览器 Cookie**（key 实测被 401，自动退 Cookie；**可一键登录**，见下） |
 | `claude` / `anthropic` / `claude-code` | 5h / 7d 双窗口 | `api.anthropic.com/api/oauth/usage` | **sessionKey Cookie**（**可一键登录**，见下） |
 
 > `modlens-<provider>` 视觉包装路由会自动剥壳后映射到上游 provider。
@@ -153,13 +156,11 @@
 
 ## 安装
 
-### 方式 A：插件市场（推荐）
+### 方式 A：npm / 插件市场（推荐）
 
-本插件已发布到 **dsh-plugin 生态**（GitHub topic [`dsh-plugin`](https://github.com/topics/dsh-plugin)，
-被 DSH 插件市场（如 dsh-plugin-marketplace）live 同步）：
-
-- 在 DSH **设置 → 插件** 的「插件市场」标签搜索 **dsh-musage-card** 一键安装；或
-- 让 agent 执行 `market_install` / 手动 `dsh plugin --profile web add -w Lin-Dongg/dsh-musage-card`。
+- **npm 安装**：`dsh plugin --profile web add -w dsh-musage-card`；或
+- 在 DSH **设置 → 插件** 的「插件市场」搜索 **dsh-musage-card** 一键安装（GitHub topic [`dsh-plugin`](https://github.com/topics/dsh-plugin) 收录，市场自动同步）；或
+- 让 agent 执行 `market_install`。
 
 安装后重启 DSH。
 
