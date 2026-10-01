@@ -301,12 +301,28 @@ test("pickCookieValue: 空输入 / 无该键 → null", () => {
 
 // ───────────────────────── parseStepfunOasis ─────────────────────────
 
-test("parseStepfunOasis: 典型响应 → credit / voucherPlan 等字段", () => {
-  const r = L.parseStepfunOasis({ credit: 123.45, voucherPlan: 50, voucherApi: 10, voucher: 60, balance: 0, payment: 0, costMonth: 1.5 });
-  assert.equal(r.credit, 123.45);
+test("parseStepfunOasis: 实机响应形状（snake_case 字符串分）→ 金额转元 + credit 保留", () => {
+  const r = L.parseStepfunOasis({
+    voucher: "596", payment: "0", balance: "596",
+    cost_yesterday: "457", cost_month: "447", cost_total: "904",
+    voucher_expire_time: 7776000, notify_threshold: 10,
+    credit: "0", voucher_api: "596", voucher_plan: "0",
+  });
+  assert.equal(r.voucher, 5.96);
+  assert.equal(r.balance, 5.96);
+  assert.equal(r.voucherApi, 5.96);
+  assert.equal(r.voucherPlan, 0);
+  assert.equal(r.costYesterday, 4.57);
+  assert.equal(r.costMonth, 4.47);
+  assert.equal(r.costTotal, 9.04);
+  assert.equal(r.credit, 0);
+});
+
+test("parseStepfunOasis: 兼容 camelCase 与数字输入", () => {
+  const r = L.parseStepfunOasis({ voucherPlan: 5000, costMonth: 150, credit: 12.5 });
   assert.equal(r.voucherPlan, 50);
-  assert.equal(r.voucher, 60);
   assert.equal(r.costMonth, 1.5);
+  assert.equal(r.credit, 12.5);
 });
 
 test("parseStepfunOasis: 非法输入 / 无可用字段 → null", () => {
@@ -314,22 +330,27 @@ test("parseStepfunOasis: 非法输入 / 无可用字段 → null", () => {
   assert.equal(L.parseStepfunOasis("not json"), null);
   assert.equal(L.parseStepfunOasis([]), null);
   assert.equal(L.parseStepfunOasis({ message: "x" }), null);   // Connect 错误形状
-  assert.equal(L.parseStepfunOasis({ credit: "abc" }), null);  // 类型不符
+  assert.equal(L.parseStepfunOasis({ credit: "abc" }), null);  // 无可解析数字
 });
 
 test("parseStepfunOasis: 部分字段合法即可（credit 缺但 voucherPlan 在）", () => {
-  const r = L.parseStepfunOasis({ voucherPlan: 7 });
+  const r = L.parseStepfunOasis({ voucherPlan: 700 });
   assert.equal(r.voucherPlan, 7);
   assert.equal(r.credit, null);
 });
 
 // ───────────────────────── LOGIN_ASSIST.stepfun ─────────────────────────
 
-test("LOGIN_ASSIST: stepfun 条目 —— ref / 登录页 / 标记 cookie 对齐", () => {
+test("LOGIN_ASSIST: stepfun 条目 —— ref / 登录页 / 标记 cookie / 换票配置对齐", () => {
   const cfg = L.LOGIN_ASSIST.stepfun;
   assert.ok(cfg, "缺 stepfun 登录助手配置");
   assert.equal(cfg.ref, "STEPFUN_COOKIE");
   assert.ok(String(cfg.loginUrl).includes("account.stepfun.com"), "登录页应为账号域");
   assert.deepEqual(cfg.markerCookies, ["Oasis-Token"]);
   assert.equal(cfg.extract, "all");
+  // 跨域换票（2026-10-01 联调实测机制）: 账号域凭证出现后导航 returnTo 页
+  assert.ok(cfg.via, "缺跨域换票配置");
+  assert.ok(Array.isArray(cfg.via.urls) && cfg.via.urls.length > 0);
+  assert.ok(String(cfg.via.returnUrl).includes("returnTo"), "换票 URL 应带 returnTo");
+  assert.ok(String(cfg.via.returnUrl).includes("account.stepfun.com"));
 });

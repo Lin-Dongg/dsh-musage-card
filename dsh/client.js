@@ -791,13 +791,15 @@ window.__ModuleLoader__.load({
           } else if (d.oasis) {
             const o = d.oasis;
             const bits = [];
-            if (typeof o.voucherPlan === "number") bits.push("Plan ¥" + o.voucherPlan.toFixed(2));
-            if (typeof o.credit === "number") bits.push("Credit " + o.credit);
-            if (typeof o.voucher === "number") bits.push("赠送 ¥" + o.voucher.toFixed(2));
+            if (typeof o.voucher === "number" && o.voucher > 0) bits.push("券 ¥" + o.voucher.toFixed(2));
+            if (typeof o.voucherPlan === "number" && o.voucherPlan > 0) bits.push("Plan ¥" + o.voucherPlan.toFixed(2));
+            if (typeof o.credit === "number" && o.credit > 0) bits.push("Credit " + o.credit);
+            if (typeof o.costYesterday === "number" && o.costYesterday > 0) bits.push("昨 ¥" + o.costYesterday.toFixed(2));
+            if (typeof o.costMonth === "number" && o.costMonth > 0) bits.push("本月 ¥" + o.costMonth.toFixed(2));
             children.push(React.createElement("div", {
               key: "planNote",
               className: "dsh-musage-card__note",
-              title: "Step Plan / 账户总览（网页登录态实时数据）\n" + JSON.stringify(o),
+              title: "StepFun 账户总览（网页登录态实时数据）\n" + JSON.stringify(o),
             }, "🧾 " + (bits.join(" · ") || "账户总览已连接")));
           } else if (login.state === "success") {
             children.push(React.createElement("div", {

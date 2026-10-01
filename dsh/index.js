@@ -226,12 +226,18 @@ const LOGIN_ASSIST = {
   },
   stepfun: {
     ref: "STEPFUN_COOKIE",
-    // StepFun 账号域登录页, redirect 带回 account-overview（登录后回跳建立
-    // platform 域 Oasis 登录态）。2026-10-01 实机探测落地形态。
+    // StepFun 账号域登录页, redirect 带回 account-overview（登录后回跳）。2026-10-01 实机探测。
     loginUrl: "https://account.stepfun.com/login?redirect=%2F%3FreturnTo%3Dhttps%253A%252F%252Fplatform.stepfun.com%252Faccount-overview",
     siteUrl: "https://platform.stepfun.com/",
     markerCookies: ["Oasis-Token"],
     extract: "all",
+    // 跨域换票（2026-10-01 联调实测）: 登录态先落在 account 域; 目标域出现凭证前,
+    // 若经 via.urls 检测到账号域已有凭证, 导航 via.returnUrl 完成换票
+    // （platform 域获得自己的 Oasis-Token 后, 原有轮询即可接手）。
+    via: {
+      urls: ["https://account.stepfun.com/"],
+      returnUrl: "https://account.stepfun.com/?returnTo=" + encodeURIComponent("https://platform.stepfun.com/account-overview"),
+    },
   },
 };
 
@@ -930,19 +936,36 @@ function pickCookieValue(cookieHeader, name) {
 }
 
 /** 解析 StepFun QueryAccountBalance 的 Connect-JSON 响应 (camelCase)。
- *  无任何可用金额字段 → null。字段语义以 2026-10-01 实机为准。 */
+ *  实机（2026-10-01）响应值是**字符串分**: voucher "596" = ¥5.96；
+ *  金额字段统一按分 → 元转换（保留 2 位）；credit 保留原值（数量语义）。
+ *  无任何可用字段 → null。 */
 function parseStepfunOasis(json) {
   if (!json || typeof json !== "object" || Array.isArray(json)) return null;
-  const num = (v) => (typeof v === "number" && isFinite(v)) ? v : null;
+  const num = (v) => {
+    if (typeof v === "number" && isFinite(v)) return v;
+    if (typeof v === "string" && v.trim() !== "") {
+      const n = Number(v);
+      if (isFinite(n)) return n;
+    }
+    return null;
+  };
+  const money = (v) => {
+    const n = num(v);
+    return n === null ? null : Math.round(n) / 100;
+  };
+  // 实机响应用 snake_case（cost_yesterday 等）; 兼容 Connect 默认 camelCase。
+  const pick = (snake, camel) => (json[snake] !== undefined ? json[snake] : json[camel]);
   const out = {
     credit: num(json.credit),
-    voucher: num(json.voucher),
-    voucherApi: num(json.voucherApi),
-    voucherPlan: num(json.voucherPlan),
-    payment: num(json.payment),
-    balance: num(json.balance),
-    costMonth: num(json.costMonth),
-    voucherExpireTime: num(json.voucherExpireTime),
+    voucher: money(json.voucher),
+    voucherApi: money(pick("voucher_api", "voucherApi")),
+    voucherPlan: money(pick("voucher_plan", "voucherPlan")),
+    payment: money(json.payment),
+    balance: money(json.balance),
+    costYesterday: money(pick("cost_yesterday", "costYesterday")),
+    costMonth: money(pick("cost_month", "costMonth")),
+    costTotal: money(pick("cost_total", "costTotal")),
+    voucherExpireTime: num(pick("voucher_expire_time", "voucherExpireTime")),
   };
   if (out.credit === null && out.balance === null && out.voucherPlan === null && out.voucher === null) return null;
   return out;
@@ -1121,6 +1144,12 @@ async function cdpGetCookies(sess, urls) {
   return (result && Array.isArray(result.cookies)) ? result.cookies : [];
 }
 
+/** CDP 导航页面并按短延时等待提交（StepFun 跨域换票等场景用）。 */
+async function cdpNavigate(sess, url, waitMs) {
+  try { await sess.call("Page.navigate", { url: url }, 8000); } catch (e) { /* 导航断连在预期内 */ }
+  await sleepMs(waitMs || 2500);
+}
+
 /** 解析登录路由输入 (method/action/provider 归一), 返回 { ok, op }。 */
 function parseLoginRequest(input) {
   const method = String((input && input.method) || "GET").toUpperCase();
@@ -1272,13 +1301,15 @@ export function apply(ctx) {
         "-H", "User-Agent: claude-code/2.1.0",
       ];
     } else if (authStyle === "oasis") {
-      // StepFun 网页登录态: 整段 Cookie + 从其中提取转发的 Oasis 头
-      // （2026-10-01 逆向: 官网前端把 cookie 的 Oasis-Token/WebID 转请求头）。
-      const oasisToken = pickCookieValue(key, "Oasis-Token");
-      const oasisWebid = pickCookieValue(key, "WebID");
+      // StepFun 网页登录态（2026-10-01 实机配方, 401→200 探针全实证）:
+      //   Cookie（含 Oasis-Token, 服务端从 cookie 取）
+      //   + Oasis-Webid: <cookie "Oasis-Webid" 同值>
+      //   + Oasis-AppID: 10300 + Oasis-Platform: web（缺 → 401 oasis-token is embezzled）
+      const oasisWebid = pickCookieValue(key, "Oasis-Webid");
       authArgs = ["-H", "Cookie: " + key];
-      if (oasisToken) authArgs.push("-H", "Oasis-Token: " + oasisToken);
       if (oasisWebid) authArgs.push("-H", "Oasis-Webid: " + oasisWebid);
+      authArgs.push("-H", "Oasis-AppID: 10300");
+      authArgs.push("-H", "Oasis-Platform: web");
     } else {
       authArgs = ["-H", "Authorization: Bearer " + key];
     }
@@ -1632,6 +1663,18 @@ export function apply(ctx) {
           } catch (e2) { /* 浏览器退出过渡态: 下一轮 exited 收敛 */ }
           await sleepMs(LOGIN_POLL_MS);
           continue;
+        }
+        // 跨域换票（StepFun, 2026-10-01 实机）: 目标域无凭证但账号域已有 → 导航
+        // via.returnUrl 触发换票, 下一轮轮询读目标域。只做一次（viaNavigated 防环）。
+        if (!hasLoginMarker(sess.provider, cookies) && cfg.via && !sess.viaNavigated) {
+          let viaCookies = [];
+          try { viaCookies = await cdpGetCookies(sess.sess, cfg.via.urls); } catch (e) { /* 保持等待 */ }
+          if (hasLoginMarker(sess.provider, viaCookies)) {
+            sess.viaNavigated = true;
+            sess.message = "已登录，正在完成跨域跳转…";
+            await cdpNavigate(sess.sess, cfg.via.returnUrl, 3000);
+            continue;   // 下一轮轮询读目标域 cookie
+          }
         }
         if (hasLoginMarker(sess.provider, cookies) && nowMs() - sess.lastProbeAt >= LOGIN_PROBE_MIN_MS) {
           sess.lastProbeAt = nowMs();

@@ -13,7 +13,17 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as host from "../dsh/index.js";
+
+// 测试专用 DSH_HOME：生产代码的 profileDir = <DSH_HOME>/musage-login/<browser>
+// 由环境变量派生，spawn argv 与端口读取共用同一来源。改它即可整体隔离——
+// 真实联调会话可能正占用默认 profile（Chromium singleton 锁会让测试浏览器
+// 直接退出、不写 DevToolsActivePort → 30s 超时误报）。
+const TEST_DSH_HOME = mkdtempSync(join(tmpdir(), "musage-orch-home-"));
+process.env.DSH_HOME = TEST_DSH_HOME;
 
 const browsers = (() => {
   try { return host.__login.pickBrowserCandidates(process.platform, undefined, process.env); }
@@ -39,6 +49,7 @@ const ctx = {
     spawn: (spec) => {
       const argv = spec.argv.slice();
       argv.splice(1, 0, "--headless=new"); // 测试降级：不弹窗（headful 由手工 E2E 覆盖）
+      // profile 隔离由模块级 DSH_HOME 改写完成（spawn argv 与端口读取同源）
       const child = spawn(argv[0], argv.slice(1), { stdio: "ignore" });
       children.add(child);
       child.on("exit", () => children.delete(child));
@@ -111,6 +122,7 @@ const reachedWaitOrTerminal = (s) => !!s && (s.state === "waiting" || TERMINAL.i
 
 after(() => {
   for (const c of children) { try { c.kill(); } catch (e) {} }
+  try { rmSync(TEST_DSH_HOME, { recursive: true, force: true }); } catch (e) {}
 });
 
 // ---------- 用例 ----------

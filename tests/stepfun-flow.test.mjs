@@ -81,7 +81,7 @@ test("stepfun: oasis 已连接 → 渲染 🧾 行（Plan/Credit/赠送），不
   assert.ok(flat.includes("🧾"), "应渲染 oasis 行");
   assert.ok(flat.includes("Plan ¥50.00"), "应含 voucherPlan");
   assert.ok(flat.includes("Credit 123.45"), "应含 credit");
-  assert.ok(flat.includes("赠送 ¥60.00"), "应含 voucher");
+  assert.ok(flat.includes("券 ¥60.00"), "应含 voucher（券余额）");
   assert.ok(!flat.includes("🔑"), "oasis 已连接时不应出现登录引导");
   // 注意: 卡片 tooltip（quotaTitle）会 JSON dump 整个 display, 其中含 planNote
   // 字段——因此"未渲染 planNote 行"必须检查渲染行特征, 而非任意文本。
