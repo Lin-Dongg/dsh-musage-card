@@ -18,7 +18,7 @@
 | `siliconflow` / `siliconflow-cn` | 余额（¥，充值/总额细分） | `api.siliconflow.cn/v1/user/info` | `SILICONFLOW_API_KEY` |
 | `tavily` | 已用 / 总量 credits + 明细 | `api.tavily.com/usage` | `TAVILY_API_KEY` |
 | `zenmux` | PAYG 余额（$，充值/奖励细分） | `zenmux.ai/api/v1/management/payg/balance` | `ZENMUX_MANAGEMENT_API_KEY`（`sk-mg-v1-`） |
-| `xiaomi-token-plan-{ams,cn,sgp}` / `xiaomi` / `mimo` … | 套餐 / 补偿 / 月总额 三行 | `platform.xiaomimimo.com/api/v1/tokenPlan/usage` | **Token Plan API key** 或 Cookie（见下） |
+| `xiaomi-token-plan-{ams,cn,sgp}` / `xiaomi` / `mimo` … | 套餐 / 补偿 / 月总额 三行 | `platform.xiaomimimo.com/api/v1/tokenPlan/usage` | **浏览器 Cookie**（key 实测被 401，自动退 Cookie；见下） |
 | `claude` / `anthropic` / `claude-code` | 5h / 7d 双窗口 | `api.anthropic.com/api/oauth/usage` | **sessionKey Cookie**（见下） |
 
 > `modlens-<provider>` 视觉包装路由会自动剥壳后映射到上游 provider。
@@ -27,11 +27,10 @@
 
 - **API Key 类（前 9 家）**：复用 DSH 模型设置里已配的 provider key
   （DSH 规范：`<PROVIDER 大写去特殊字符>_API_KEY`），无需重复填写。
-- **小米 MiMo**：优先复用 DSH 里已配的 Token Plan API key（`XIAOMI_TOKEN_PLAN_AMS_API_KEY` /
-  `XIAOMI_TOKEN_PLAN_CN_API_KEY` / `XIAOMI_TOKEN_PLAN_SGP_API_KEY` / `XIAOMI_API_KEY`，走
-  Bearer——对应 pi-ai 内置的 `xiaomi-token-plan-{ams,cn,sgp}` 三区）。无 key 时回退浏览器
-  dashboard 登录态：登录 `platform.xiaomimimo.com` → F12 → Network → 任一
-  `/api/v1/tokenPlan/*` 请求 → 复制**完整 Cookie header 值**，存入 ref `XIAOMI_MIMO_COOKIE`。
+- **小米 MiMo**：**需要浏览器登录态 Cookie**（2026-10 实机：Token Plan API key 走 Bearer 会被
+  dashboard 端点 401 + loginUrl 拒绝；若命中了 key，插件会自动退 Cookie 重试一次）。获取：
+  登录 `platform.xiaomimimo.com` → F12 → Network → 任一 `/api/v1/tokenPlan/*` 请求 →
+  复制**完整 Cookie header 值**，存入 ref `XIAOMI_MIMO_COOKIE`。
 - **Claude**：从 `claude.ai` 取 `sessionKey` cookie 值，存入 ref `CLAUDE_SESSION_KEY`
   （官方 OAuth 用量端点，插件自动带 `Anthropic-Beta: oauth-2025-04-20` 与 `claude-code` UA）。
 - **Cookie 的存入方式**（MiMo 兜底、Claude 必需）：编辑 `~/.dsh/.credentials.yaml` 追加一行

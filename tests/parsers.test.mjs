@@ -8,6 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { __parsers as P, __providers } from "../dsh/index.js";
+import * as HOST from "../dsh/index.js";
 
 // ───────────────────────── SiliconFlow ─────────────────────────
 
@@ -201,4 +202,30 @@ test("xiaomi: authStyleByRef 按 ref 分派——key 走 bearer, cookie 走 cook
   const m = __providers.xiaomi.authStyleByRef || {};
   assert.equal(m["XIAOMI_MIMO_COOKIE"], "cookie");
   assert.equal(m["XIAOMI_TOKEN_PLAN_AMS_API_KEY"], "bearer");
+});
+
+// ───────────────────────── 401 → Cookie 兜底（2026-10 实机修复） ─────────────────────────
+// 实机：AMS Token Plan key（Bearer）打 dashboard 端点返 401 + loginUrl；
+// 对齐 Musage xiaomi.rs 的 BearerThenCookie：401 时自动退浏览器 Cookie 重试。
+
+test("xiaomi: fallbackAuth 配置存在且指向 cookie refs", () => {
+  const fb = __providers.xiaomi.fallbackAuth;
+  assert.ok(fb, "缺 fallbackAuth 配置");
+  assert.equal(fb.style, "cookie");
+  assert.ok(fb.refs.includes("XIAOMI_MIMO_COOKIE"), "兜底 refs 应含 XIAOMI_MIMO_COOKIE");
+});
+
+test("pickFallbackAuth: 仅 401 且配了 fallbackAuth 时触发", () => {
+  const fn = HOST.pickFallbackAuth;
+  assert.equal(typeof fn, "function", "pickFallbackAuth 未导出");
+  const cfg = __providers.xiaomi;
+  // 401 且已配 → 触发
+  const hit = fn(cfg, { ok: false, httpStatus: 401 });
+  assert.ok(hit, "401 应触发兜底");
+  assert.equal(hit.style, "cookie");
+  // 其它失败 / 成功 / 未配 fallbackAuth → 不触发
+  assert.equal(fn(cfg, { ok: false, httpStatus: 500 }), null, "非 401 不兜底");
+  assert.equal(fn(cfg, { ok: false, httpStatus: 429 }), null, "429 不兜底");
+  assert.equal(fn(cfg, { ok: true }), null, "成功不兜底");
+  assert.equal(fn(__providers.deepseek, { ok: false, httpStatus: 401 }), null, "无 fallbackAuth 不兜底");
 });

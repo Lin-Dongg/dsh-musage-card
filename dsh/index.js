@@ -167,6 +167,12 @@ const PROVIDERS = {
       MIMO_COOKIE:                   "cookie",
     },
     authStyle: "bearer",
+    // Bearer 被 dashboard 拒（实机 401 + loginUrl）时自动退 Cookie 重试一次
+    // （对齐 Musage xiaomi.rs 的 BearerThenCookie 语义）。
+    fallbackAuth: {
+      refs: ["XIAOMI_MIMO_COOKIE", "XIAOMI_COOKIE", "MIMO_COOKIE"],
+      style: "cookie",
+    },
   },
   claude: {
     // Claude 官方 OAuth 用量 (Claude Pro / Max 订阅): 凭据是 claude.ai 的 sessionKey cookie.
@@ -766,6 +772,20 @@ function parseClaudeResponse(body) {
   };
 }
 
+/**
+ * 首次请求失败时选择兜底鉴权（纯函数；fetchProviderQuota 与测试共用）。
+ * 仅当响应为 401（凭据被拒）且 provider 配置了 fallbackAuth 时触发。
+ * @param cfg - PROVIDERS[provider] 条目
+ * @param firstRaw - 首次 curlFetch 的结果
+ * @returns fallbackAuth 配置对象（{refs, style}），或 null
+ */
+export function pickFallbackAuth(cfg, firstRaw) {
+  if (!cfg || !cfg.fallbackAuth) return null;
+  if (!firstRaw || firstRaw.ok) return null;
+  if (firstRaw.httpStatus !== 401) return null;
+  return cfg.fallbackAuth;
+}
+
 function formatBalance(n, currency) {
   // 简洁显示: 数字 + currency 符号. 大数取整, 小数 2 位.
   const symbol = currency === "CNY" ? "¥" : currency === "USD" ? "$" : "";
@@ -996,7 +1016,35 @@ export function apply(ctx) {
     let raw;
     try {
       raw = await curlFetch(url, key, style);
-      if (!raw.ok) return raw;
+      if (!raw.ok) {
+        // 401（凭据被拒）→ 按 fallbackAuth 退用 Cookie 重试一次
+        // （对齐 Musage xiaomi.rs 的 BearerThenCookie：Token Plan key 会被
+        //  dashboard 端点 401 拒绝，浏览器登录态 Cookie 才是正路）。
+        const fb = pickFallbackAuth(cfg, raw);
+        if (fb && Array.isArray(fb.refs)) {
+          const credentials = ctx.credentials;
+          for (const fbRef of fb.refs) {
+            let hit = null;
+            try { hit = credentials ? await credentials.resolve(fbRef) : null; } catch (e) {}
+            if (hit && hit.value) {
+              raw = await curlFetch(cfg.urls[fbRef] || url, hit.value, fb.style || "cookie");
+              if (raw.ok) break;
+            }
+          }
+        }
+        if (!raw.ok) {
+          // 401 且兜底也无凭据：返回可操作指引（卡片 note 会显示）。
+          if (raw.httpStatus === 401 && cfg.fallbackAuth) {
+            return {
+              ok: false,
+              kind: "auth_failed",
+              httpStatus: 401,
+              message: "HTTP 401：需要浏览器登录态 Cookie —— 请将 platform.xiaomimimo.com 的完整 Cookie header 值存入 ref XIAOMI_MIMO_COOKIE（见 README「凭据」一节）",
+            };
+          }
+          return raw;
+        }
+      }
     } catch (e) {
       return { ok: false, kind: "network", message: "fetch 异常: " + ((e && e.message) || String(e)) };
     }
