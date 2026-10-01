@@ -153,6 +153,18 @@
 
 ## 安装
 
+### 方式 A：插件市场（推荐）
+
+本插件已发布到 **dsh-plugin 生态**（GitHub topic [`dsh-plugin`](https://github.com/topics/dsh-plugin)，
+被 DSH 插件市场（如 dsh-plugin-marketplace）live 同步）：
+
+- 在 DSH **设置 → 插件** 的「插件市场」标签搜索 **dsh-musage-card** 一键安装；或
+- 让 agent 执行 `market_install` / 手动 `dsh plugin --profile web add -w Lin-Dongg/dsh-musage-card`。
+
+安装后重启 DSH。
+
+### 方式 B：本地 file: 挂载（开发调试）
+
 1. 把 `dsh-musage-card` 目录放到任意位置（见下方 profile 依赖写法）。
 2. 编辑 `~/.dsh/profiles/desktop/package.json`：
    - `dsh.profile.bundles` 数组加入 `"dsh-musage-card"`；
@@ -160,8 +172,8 @@
 3. 在 profile 目录执行 `pnpm install`。
 4. 重启 DSH（host 半边）或刷新页面（client 半边）。
 
-> 注意：若在插件市场装了官方 `dsh-musage`，两者会同时挂载（insert id 不同：
-> `musage-card` vs `musage`），出现重复卡片时卸载官方版即可。
+> 注意：与官方 `dsh-musage` 同时挂载会出现重复卡片（insert id 不同：
+> `musage-card` vs `musage`），二选一即可。
 
 ## 开发
 
