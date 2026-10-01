@@ -14,7 +14,7 @@
 | `kimi` / `kimi-coding` | 5h / 7d 双窗口 | `api.kimi.com/coding/v1/usages` | `KIMI_CODING_API_KEY` |
 | `zhipu` / `zai-coding-cn` | 5h / 7d 双窗口 | `open.bigmodel.cn/api/monitor/usage/quota/limit` | `ZAI_CODING_CN_API_KEY` |
 | `openrouter` | 余额（$） | `openrouter.ai/api/v1/credits` | `OPENROUTER_API_KEY` |
-| `stepfun` / `stepfun-plan` | 余额（¥，现金/券细分） | `api.stepfun.com/v1/accounts` | `STEPFUN_API_KEY` |
+| `stepfun` / `stepfun-plan` | 余额（¥，现金/券细分）+ 账户总览 | `api.stepfun.com/v1/accounts` / `/api/…Dashboard/QueryAccountBalance` | `STEPFUN_API_KEY`；Step Plan / Credit 走**网页登录态**（**可一键登录**，见下） |
 | `siliconflow` / `siliconflow-cn` | 余额（¥，充值/总额细分） | `api.siliconflow.cn/v1/user/info` | `SILICONFLOW_API_KEY` |
 | `tavily` | 已用 / 总量 credits + 明细 | `api.tavily.com/usage` | `TAVILY_API_KEY` |
 | `zenmux` | PAYG 余额（$，充值/奖励细分） | `zenmux.ai/api/v1/management/payg/balance` | `ZENMUX_MANAGEMENT_API_KEY`（`sk-mg-v1-`） |
@@ -47,11 +47,11 @@
 
 - Cookie 会过期（Claude 约 8 小时、MiMo 随登出失效）：卡片显示 ⚠ 时重新复制一次即可。
 
-### 一键登录（登录助手，v1.5.0，推荐）
+### 一键登录（登录助手，v1.5.0 / v1.6.0，推荐）
 
-对 **小米 MiMo** 与 **Claude** 两家（Cookie 型凭据，普通用户无法手工提取）：
+对 **小米 MiMo**、**Claude**、**StepFun** 三家（网页登录态凭据，普通用户无法手工提取）：
 
-1. 卡片处于失败态（⚠ / 🔑）时 **点击卡片**；
+1. 卡片显示 ⚠ / 🔑 / 「点击卡片登录读取」时 **点击卡片**；
 2. 插件弹出**专用浏览器窗口**（本机 Edge/Chrome），停在官方登录页；
 3. 你在窗口里正常登录（账号密码直接提交给官方站点，插件不接触）；
 4. 登录完成 → 窗口自动关闭 → 卡片自动显示用量。**无需 F12、无需复制、无需编辑文件。**
@@ -80,6 +80,20 @@
 - host 半边已扩展为 11 家（上游 5 家）
 
 ## 变更记录
+
+### v1.6.0（2026-10）StepFun 一键登录：读取 Step Plan Credit / 账户总览
+
+- **Host（`dsh/index.js`）**：登录助手新增 StepFun（登录页 `account.stepfun.com`；
+  成功判定 = Connect-JSON `QueryAccountBalance` 试调自证，认证 = 整段 cookie +
+  从 cookie 提取的 `Oasis-Token` / `Oasis-Webid` 请求头——2026-10-01 逆向自官网
+  bundle 并经未认证 401 探针实证）；`curlFetch` 扩展 POST / 自定义头 / body 支持
+  （新增 `oasis` 鉴权型）；StepFun 余额响应附加 `display.oasis`
+  （credit / voucherPlan / voucher 等账户总览字段，失败静默不阻塞余额）。
+- **Client（`dsh/client.js`）**：StepFun 卡片渲染 🧾 账户总览行（Plan/Credit/赠送）；
+  缺数据时渲染「🔑 点击卡片登录读取 Step Plan Credit」引导；
+  `canLoginAssistFor` 语义调整为以 host 附着为唯一事实源（StepFun 成功态也可给登录入口）。
+- **测试**：95 用例 —— 新增 pickCookieValue / parseStepfunOasis / stepfun 配置纯函数
+  用例、StepFun 接口在线契约探测（端点漂移报警）、stepfun 卡片渲染仿真 4 用例。
 
 ### v1.5.0（2026-10）登录助手：点击卡片 → 浏览器登录 → 自动获取 Cookie
 

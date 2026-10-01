@@ -152,9 +152,10 @@ window.__ModuleLoader__.load({
 
     // ---- 登录交互决策 (纯函数; 渲染与测试共用) ----
 
-    /** 失败态是否应展示「点击登录」入口 (host 在失败响应上带 loginAssist)。 */
+    /** 是否应展示「点击登录」入口 —— host 在响应上带 loginAssist 即为可登录
+     *  （失败态全 provider; stepfun 成功态缺网页数据时也带）。host 是唯一事实源。 */
     function canLoginAssistFor(state) {
-      return !!(state && state.loaded && !state.ok && state.loginAssist && state.loginAssist.supported);
+      return !!(state && state.loaded && state.loginAssist && state.loginAssist.supported);
     }
 
     /** 卡片点击的动作决策: 登录中→noop; 可登录→login; 其余→refresh。 */
@@ -777,12 +778,52 @@ window.__ModuleLoader__.load({
             title: d.balanceDetail,
           }, d.balanceDetail));
         }
-        // StepFun: Plan Credit 无 API 端点的提示 (避免误读按量余额 = Credit)
-        if (d.planNote) {
+        // StepFun: 网页登录态行（Step Plan / Credit）或登录引导
+        // （2026-10-01: account-overview 同源 Connect-JSON 接口已接入, host 侧附加
+        //   display.oasis; 缺数据时引导「点击卡片登录读取」）
+        if (provider === "stepfun") {
+          if (login.active) {
+            children.push(React.createElement("div", {
+              key: "planNote",
+              className: "dsh-musage-card__note",
+              title: "dsh-musage · 登录助手\n" + (login.message || ""),
+            }, "🔓 " + (login.message || "已打开浏览器，完成登录后自动生效…")));
+          } else if (d.oasis) {
+            const o = d.oasis;
+            const bits = [];
+            if (typeof o.voucherPlan === "number") bits.push("Plan ¥" + o.voucherPlan.toFixed(2));
+            if (typeof o.credit === "number") bits.push("Credit " + o.credit);
+            if (typeof o.voucher === "number") bits.push("赠送 ¥" + o.voucher.toFixed(2));
+            children.push(React.createElement("div", {
+              key: "planNote",
+              className: "dsh-musage-card__note",
+              title: "Step Plan / 账户总览（网页登录态实时数据）\n" + JSON.stringify(o),
+            }, "🧾 " + (bits.join(" · ") || "账户总览已连接")));
+          } else if (login.state === "success") {
+            children.push(React.createElement("div", {
+              key: "planNote",
+              className: "dsh-musage-card__note",
+            }, "✓ 已登录，正在读取…"));
+          } else if (canLoginAssist) {
+            children.push(React.createElement("div", {
+              key: "planNote",
+              className: "dsh-musage-card__note",
+              style: { color: "var(--dsw-alias-label-primary, #eee)" },
+              title: "dsh-musage · 登录助手\n点击卡片打开 StepFun 账号登录页，登录后自动读取 Step Plan Credit 并保存。",
+            }, "🔑 点击卡片登录读取 Step Plan Credit"));
+          } else if (d.planNote) {
+            children.push(React.createElement("div", {
+              key: "planNote",
+              className: "dsh-musage-card__note",
+              title: "Step Plan (Token Plan) 未连接，可在 platform.stepfun.com/account-overview 查看",
+            }, d.planNote));
+          }
+        } else if (d.planNote) {
+          // 其他 provider 的 planNote 兜底（目前仅 StepFun 使用，防御未来复用）
           children.push(React.createElement("div", {
             key: "planNote",
             className: "dsh-musage-card__note",
-            title: "Step Plan (Token Plan) 的 Credit 用量没有 API-Key 认证的查询端点，请在 platform.stepfun.com/account-overview 查看",
+            title: d.planNote,
           }, d.planNote));
         }
       }

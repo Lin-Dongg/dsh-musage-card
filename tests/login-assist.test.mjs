@@ -278,3 +278,58 @@ test("readJsonBody: 非法 JSON → reject", async () => {
   req.emit("end");
   await assert.rejects(p);
 });
+
+// ───────────────────────── pickCookieValue ─────────────────────────
+
+test("pickCookieValue: 从 Cookie header 提取指定 cookie", () => {
+  const h = "a=1; Oasis-Token=tk-123; WebID=wid-9; b=2";
+  assert.equal(L.pickCookieValue(h, "Oasis-Token"), "tk-123");
+  assert.equal(L.pickCookieValue(h, "WebID"), "wid-9");
+});
+
+test("pickCookieValue: 精确匹配键名（不做前后缀模糊）", () => {
+  const h = "X-Oasis-Token=x; Oasis-Token-2=y; WebIDExtra=z";
+  assert.equal(L.pickCookieValue(h, "Oasis-Token"), null);
+  assert.equal(L.pickCookieValue(h, "WebID"), null);
+});
+
+test("pickCookieValue: 空输入 / 无该键 → null", () => {
+  assert.equal(L.pickCookieValue("", "Oasis-Token"), null);
+  assert.equal(L.pickCookieValue(null, "Oasis-Token"), null);
+  assert.equal(L.pickCookieValue("a=1; b=2", "Oasis-Token"), null);
+});
+
+// ───────────────────────── parseStepfunOasis ─────────────────────────
+
+test("parseStepfunOasis: 典型响应 → credit / voucherPlan 等字段", () => {
+  const r = L.parseStepfunOasis({ credit: 123.45, voucherPlan: 50, voucherApi: 10, voucher: 60, balance: 0, payment: 0, costMonth: 1.5 });
+  assert.equal(r.credit, 123.45);
+  assert.equal(r.voucherPlan, 50);
+  assert.equal(r.voucher, 60);
+  assert.equal(r.costMonth, 1.5);
+});
+
+test("parseStepfunOasis: 非法输入 / 无可用字段 → null", () => {
+  assert.equal(L.parseStepfunOasis(null), null);
+  assert.equal(L.parseStepfunOasis("not json"), null);
+  assert.equal(L.parseStepfunOasis([]), null);
+  assert.equal(L.parseStepfunOasis({ message: "x" }), null);   // Connect 错误形状
+  assert.equal(L.parseStepfunOasis({ credit: "abc" }), null);  // 类型不符
+});
+
+test("parseStepfunOasis: 部分字段合法即可（credit 缺但 voucherPlan 在）", () => {
+  const r = L.parseStepfunOasis({ voucherPlan: 7 });
+  assert.equal(r.voucherPlan, 7);
+  assert.equal(r.credit, null);
+});
+
+// ───────────────────────── LOGIN_ASSIST.stepfun ─────────────────────────
+
+test("LOGIN_ASSIST: stepfun 条目 —— ref / 登录页 / 标记 cookie 对齐", () => {
+  const cfg = L.LOGIN_ASSIST.stepfun;
+  assert.ok(cfg, "缺 stepfun 登录助手配置");
+  assert.equal(cfg.ref, "STEPFUN_COOKIE");
+  assert.ok(String(cfg.loginUrl).includes("account.stepfun.com"), "登录页应为账号域");
+  assert.deepEqual(cfg.markerCookies, ["Oasis-Token"]);
+  assert.equal(cfg.extract, "all");
+});

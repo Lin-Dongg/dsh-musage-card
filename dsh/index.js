@@ -224,6 +224,15 @@ const LOGIN_ASSIST = {
     markerCookies: ["sessionKey"],
     extract: "name:sessionKey",
   },
+  stepfun: {
+    ref: "STEPFUN_COOKIE",
+    // StepFun 账号域登录页, redirect 带回 account-overview（登录后回跳建立
+    // platform 域 Oasis 登录态）。2026-10-01 实机探测落地形态。
+    loginUrl: "https://account.stepfun.com/login?redirect=%2F%3FreturnTo%3Dhttps%253A%252F%252Fplatform.stepfun.com%252Faccount-overview",
+    siteUrl: "https://platform.stepfun.com/",
+    markerCookies: ["Oasis-Token"],
+    extract: "all",
+  },
 };
 
 function nowMs() {
@@ -908,6 +917,37 @@ function joinCookieHeader(cookies) {
   return parts.length > 0 ? parts.join("; ") : null;
 }
 
+/** 从 Cookie header 值里提取单个 cookie 值 (找不到 → null)。
+ *  StepFun 的 Oasis 请求头需要从 cookie 里取 Oasis-Token / WebID 两个值。 */
+function pickCookieValue(cookieHeader, name) {
+  if (typeof cookieHeader !== "string" || cookieHeader.length === 0) return null;
+  for (const part of cookieHeader.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) continue;
+    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return null;
+}
+
+/** 解析 StepFun QueryAccountBalance 的 Connect-JSON 响应 (camelCase)。
+ *  无任何可用金额字段 → null。字段语义以 2026-10-01 实机为准。 */
+function parseStepfunOasis(json) {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return null;
+  const num = (v) => (typeof v === "number" && isFinite(v)) ? v : null;
+  const out = {
+    credit: num(json.credit),
+    voucher: num(json.voucher),
+    voucherApi: num(json.voucherApi),
+    voucherPlan: num(json.voucherPlan),
+    payment: num(json.payment),
+    balance: num(json.balance),
+    costMonth: num(json.costMonth),
+    voucherExpireTime: num(json.voucherExpireTime),
+  };
+  if (out.credit === null && out.balance === null && out.voucherPlan === null && out.voucher === null) return null;
+  return out;
+}
+
 /** 按 LOGIN_ASSIST[provider].extract 规则提取要写入 ref 的值。 */
 function extractLoginCookie(provider, cookies) {
   const cfg = LOGIN_ASSIST[provider];
@@ -1146,6 +1186,8 @@ export const __login = {
   hasLoginMarker,
   pickBrowserCandidates,
   browserCandidates,
+  pickCookieValue,
+  parseStepfunOasis,
   loginStatusSnapshot,
   parseLoginRequest,
   readJsonBody,
@@ -1206,7 +1248,7 @@ export function apply(ctx) {
     return curlPath;
   }
 
-  async function curlFetch(url, key, authStyle) {
+  async function curlFetch(url, key, authStyle, opts) {
     const subprocess = ctx.subprocess;
     if (!subprocess) throw new Error("subprocess service 不可用");
     const c = await resolveCurl();
@@ -1214,7 +1256,10 @@ export function apply(ctx) {
     //   raw    (zhipu)  → Authorization: <key>（不加 Bearer 前缀, 来自 Musage zhipu.rs 注释）
     //   cookie (xiaomi) → Cookie: <整段 Cookie header 值>
     //   claude (claude) → Cookie: sessionKey=<key> + Anthropic-Beta + claude-code UA
+    //   oasis  (stepfun)→ Cookie: <整段 Cookie header 值> + 从 cookie 提取并转发的
+    //                      Oasis-Token / Oasis-Webid 请求头（对齐官网前端做法）
     //   其它            → Authorization: Bearer <key>
+    // opts (可选, 2026-10): { method?: "POST", headers?: ["K: V", ...], body?: "<JSON>" }
     let authArgs;
     if (authStyle === "raw") {
       authArgs = ["-H", "Authorization: " + key];
@@ -1226,9 +1271,23 @@ export function apply(ctx) {
         "-H", "Anthropic-Beta: oauth-2025-04-20",
         "-H", "User-Agent: claude-code/2.1.0",
       ];
+    } else if (authStyle === "oasis") {
+      // StepFun 网页登录态: 整段 Cookie + 从其中提取转发的 Oasis 头
+      // （2026-10-01 逆向: 官网前端把 cookie 的 Oasis-Token/WebID 转请求头）。
+      const oasisToken = pickCookieValue(key, "Oasis-Token");
+      const oasisWebid = pickCookieValue(key, "WebID");
+      authArgs = ["-H", "Cookie: " + key];
+      if (oasisToken) authArgs.push("-H", "Oasis-Token: " + oasisToken);
+      if (oasisWebid) authArgs.push("-H", "Oasis-Webid: " + oasisWebid);
     } else {
       authArgs = ["-H", "Authorization: Bearer " + key];
     }
+    const optArgs = [];
+    if (opts && opts.method) optArgs.push("-X", String(opts.method));
+    if (opts && Array.isArray(opts.headers)) {
+      for (const h of opts.headers) optArgs.push("-H", h);
+    }
+    if (opts && typeof opts.body === "string") optArgs.push("-d", opts.body);
     let handle;
     try {
       handle = subprocess.spawn({
@@ -1237,6 +1296,7 @@ export function apply(ctx) {
           "--max-time", String(Math.floor(REQUEST_TIMEOUT_MS / 1000)),
           "-w", "\n%{http_code}",
           ...authArgs,
+          ...optArgs,
           "-H", "Accept: application/json",
           url,
         ],
@@ -1347,6 +1407,18 @@ export function apply(ctx) {
     if (parsed.ok) {
       parsed.url = url;
       parsed.ref = ref;
+      // stepfun: 若已存网页登录态（登录助手写入 STEPFUN_COOKIE）, 附加账户
+      // 总览（Step Plan / Credit 等）——account-overview 同源接口。
+      // 失败静默（不阻塞余额显示）; 是否给「点击登录」入口由 withLoginAssist 决定。
+      if (provider === "stepfun") {
+        try {
+          const hit = await ctx.credentials.resolve("STEPFUN_COOKIE");
+          if (hit && hit.value) {
+            const oasis = await probeStepfunOasis(hit.value);
+            if (oasis.ok && oasis.data) parsed.display.oasis = oasis.data;
+          }
+        } catch (e) { /* oasis 附加失败不影响主结果 */ }
+      }
     }
     return parsed;
   }
@@ -1388,11 +1460,20 @@ export function apply(ctx) {
     return { supported: true, ref: cfg.ref };
   }
 
-  /** 失败结果附登录助手信息（client 据此在卡片上给出「点击登录」入口）。 */
+  /** 登录助手附着（client 据此在卡片上给出「点击登录」入口）。
+   *  - 失败态: 所有支持登录的 provider 都附着;
+   *  - stepfun 成功态: 有余额但缺网页登录态数据（oasis 缺）时也附着
+   *    （引导「点击卡片登录读取 Step Plan Credit」）。 */
   function withLoginAssist(provider, result) {
-    if (result && !result.ok) {
-      const info = loginAssistInfo(provider);
-      if (info.supported) result.loginAssist = { supported: true, ref: info.ref };
+    if (!result) return result;
+    const info = loginAssistInfo(provider);
+    if (!info.supported) return result;
+    if (!result.ok) {
+      result.loginAssist = { supported: true, ref: info.ref };
+      return result;
+    }
+    if (provider === "stepfun" && result.display && !result.display.oasis) {
+      result.loginAssist = { supported: true, ref: info.ref };
     }
     return result;
   }
@@ -1429,8 +1510,35 @@ export function apply(ctx) {
     }
   }
 
+  /** StepFun 账户总览（官网 account-overview 同源接口）:
+   *  POST Connect-JSON QueryAccountBalance, 认证 = 整段 cookie + Oasis 头。
+   *  用途: 登录试调自证 + 卡片附加 Step Plan/Credit 数据。
+   *  2026-10-01 实测: 未认证返回 401 {"code":"unauthenticated"}（协议形状为此固化）。 */
+  const STEPFUN_OASIS_URL = "https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryAccountBalance";
+  async function probeStepfunOasis(cookieHeader) {
+    let raw;
+    try {
+      raw = await curlFetch(STEPFUN_OASIS_URL, cookieHeader, "oasis", {
+        method: "POST",
+        headers: ["Content-Type: application/json", "Connect-Protocol-Version: 1"],
+        body: '{"bizType":1}',
+      });
+    } catch (e) {
+      return { ok: false, message: "试调异常: " + ((e && e.message) || String(e)) };
+    }
+    if (!raw.ok) return { ok: false, message: raw.message, httpStatus: raw.httpStatus || 0 };
+    let json = null;
+    try { json = JSON.parse(raw.body); } catch (e) {}
+    const data = parseStepfunOasis(json);
+    if (!data) return { ok: false, message: "账户总览响应无可用字段: " + String(raw.body).slice(0, 120) };
+    return { ok: true, data: data };
+  }
+
   /** 用临时 cookie 值试调用量 API（复用 curlFetch + parser；不写任何缓存）。 */
   async function probeLoginValue(provider, value) {
+    // StepFun 的登录凭证是网页 Oasis 登录态, 试调走 Connect-JSON 的
+    // QueryAccountBalance（与 GET 型 curlFetch 试调不同, 走专用分支）。
+    if (provider === "stepfun") return probeStepfunOasis(value);
     const cfg = PROVIDERS[provider];
     const la = LOGIN_ASSIST[provider];
     if (!cfg || !la) return { ok: false, message: "未知 provider" };

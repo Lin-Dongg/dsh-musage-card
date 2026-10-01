@@ -28,10 +28,11 @@ const { canLoginAssistFor, decideCardClick, loginNoteFor } = mod.__test;
 
 // ───────────────────────── canLoginAssistFor ─────────────────────────
 
-test("canLoginAssistFor: 仅「失败态 + loginAssist.supported」为真", () => {
-  assert.equal(canLoginAssistFor({ loaded: true, ok: false, loginAssist: { supported: true } }), true);
-  assert.equal(canLoginAssistFor({ loaded: true, ok: true, loginAssist: { supported: true } }), false);  // 正常态不显示
+test("canLoginAssistFor: 以 host 附着为唯一事实源（含 stepfun 成功态）", () => {
+  assert.equal(canLoginAssistFor({ loaded: true, ok: false, loginAssist: { supported: true } }), true);   // 失败态
+  assert.equal(canLoginAssistFor({ loaded: true, ok: true, loginAssist: { supported: true } }), true);    // stepfun 成功态缺 oasis（host 主动附着）
   assert.equal(canLoginAssistFor({ loaded: true, ok: false }), false);                                    // host 未标记
+  assert.equal(canLoginAssistFor({ loaded: true, ok: true }), false);                                     // 正常态且 host 未标记
   assert.equal(canLoginAssistFor({ loaded: true, ok: false, loginAssist: { supported: false } }), false);
   assert.equal(canLoginAssistFor({ loaded: false, ok: false, loginAssist: { supported: true } }), false); // 加载中
   assert.equal(canLoginAssistFor(null), false);
@@ -108,6 +109,12 @@ test("loginNoteFor: 正常态 / 非登录 provider → null（走原失败/正�
   assert.equal(loginNoteFor("xiaomi", { loaded: true, ok: true }, { active: false, state: "idle" }), null);
   assert.equal(loginNoteFor("deepseek", { loaded: true, ok: false }, { active: false, state: "idle" }), null);
   assert.equal(loginNoteFor("xiaomi", { loaded: false, ok: false }, { active: false, state: "idle" }), null);
+});
+
+test("loginNoteFor: stepfun 成功态缺 oasis（host 附着）→ affordance（引导读取 Credit）", () => {
+  const n = loginNoteFor("stepfun", { loaded: true, ok: true, loginAssist: { supported: true } }, { active: false, state: "idle" });
+  assert.equal(n.kind, "affordance");
+  assert.ok(n.text.includes("StepFun"), "应带 provider 显示名");
 });
 
 test("loginNoteFor: login 缺省（undefined）按 idle 处理", () => {
