@@ -122,6 +122,78 @@ window.__ModuleLoader__.load({
       return res.json();
     }
 
+    // ---- 登录助手 (host 路由 /musage/login*) ----
+    // POST 用 query 传参（不依赖 Electron 桥对 request body 的透传）。
+    async function fetchLoginStatus() {
+      const res = await fetch("/musage/login/status", {
+        method: "GET",
+        headers: { accept: "application/json" },
+        credentials: "same-origin",
+      });
+      if (!res.ok) {
+        throw new Error("login status HTTP " + res.status);
+      }
+      return res.json();
+    }
+
+    async function postLogin(action, provider) {
+      let url = "/musage/login?action=" + encodeURIComponent(action);
+      if (provider) url += "&provider=" + encodeURIComponent(provider);
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { accept: "application/json" },
+        credentials: "same-origin",
+      });
+      if (!res.ok) {
+        throw new Error("login HTTP " + res.status);
+      }
+      return res.json();
+    }
+
+    // ---- 登录交互决策 (纯函数; 渲染与测试共用) ----
+
+    /** 失败态是否应展示「点击登录」入口 (host 在失败响应上带 loginAssist)。 */
+    function canLoginAssistFor(state) {
+      return !!(state && state.loaded && !state.ok && state.loginAssist && state.loginAssist.supported);
+    }
+
+    /** 卡片点击的动作决策: 登录中→noop; 可登录→login; 其余→refresh。 */
+    function decideCardClick(opts) {
+      if (opts && opts.loginActive) return "noop";
+      if (opts && opts.canLoginAssist) return "login";
+      return "refresh";
+    }
+
+    /** 失败态的登录文案选择; 无关 (正常态 / 非登录 provider) 时返回 null。 */
+    function loginNoteFor(provider, state, login) {
+      const lg = login || { active: false, state: "idle" };
+      if (lg.active) {
+        return {
+          kind: "active",
+          text: "🔓 " + (lg.message || "已打开浏览器，完成登录后自动生效…"),
+          title: "dsh-musage · 登录助手\n" + (lg.message || ""),
+        };
+      }
+      if (lg.state === "success") {
+        return {
+          kind: "success",
+          text: "✓ 已登录，正在刷新用量…",
+          title: "dsh-musage · 登录成功",
+        };
+      }
+      if (canLoginAssistFor(state)) {
+        const failBit = lg.message && lg.state !== "idle"
+          ? " · " + String(lg.message).slice(0, 40)
+          : "";
+        return {
+          kind: "affordance",
+          text: "🔑 需要 " + providerLabel(provider) + " 登录 · 点击卡片自动获取" + failBit,
+          title: "dsh-musage · 登录助手\n点击卡片自动打开浏览器到官方登录页，登录后自动保存凭据。\n（当前状态：" + ((state && state.message) || "unknown") + "）",
+        };
+      }
+      return null;
+    }
+
     function providerLabel(p) {
       if (p === "minimax") return "MiniMax";
       if (p === "deepseek") return "DeepSeek";
@@ -478,6 +550,9 @@ window.__ModuleLoader__.load({
       });
       const [retrySeq, setRetrySeq] = React.useState(0);
 
+      // ---- 登录助手状态（idle 之外由 host /musage/login/status 轮询驱动） ----
+      const [login, setLogin] = React.useState({ active: false, state: "idle" });
+
       React.useEffect(() => {
         if (!provider) {
           setState({ ok: false, loaded: true, kind: "other", message: "未选中支持的 provider（" + diag + "）", display: null });
@@ -502,8 +577,53 @@ window.__ModuleLoader__.load({
         };
       }, [provider, timer, retrySeq]);
 
+      // ---- 登录会话轮询: active 期间每 1.5s 拉一次 status; 终结态自动停 ----
+      React.useEffect(() => {
+        if (!login.active) return;
+        let alive = true;
+        async function poll() {
+          try {
+            const r = await fetchLoginStatus();
+            if (!alive) return;
+            const nl = (r && r.login) || { active: false, state: "idle" };
+            setLogin(nl);
+            if (nl.state === "success") setRetrySeq((s) => s + 1);  // 立刻拉真实用量
+          } catch (e) { /* 下一轮重试 */ }
+        }
+        poll();
+        const dispose = timer.interval(poll, 1500);
+        return () => {
+          alive = false;
+          try { dispose(); } catch (e) {}
+        };
+      }, [login.active, timer]);
+
       const wide = !props || props.wide !== false;
-      const onCardClick = () => setRetrySeq((s) => s + 1);  // 手动刷新 (60s 定时不变)
+      // 失败态且 host 标记支持登录助手 → 点击卡片 = 发起登录; 登录中 = no-op;
+      // 其余（正常态）= 手动刷新 (60s 定时不变)。决策在 decideCardClick 纯函数里。
+      const canLoginAssist = canLoginAssistFor(state);
+      const triggerLogin = async () => {
+        if (!provider) return;
+        setLogin({ active: true, state: "starting", message: "正在启动浏览器…", provider: provider });
+        try {
+          const r = await postLogin("start", provider);
+          if (r && r.status) setLogin(r.status);
+          else if (r && r.ok === false) setLogin({ active: false, state: "failed", message: r.message || "启动失败" });
+        } catch (e) {
+          setLogin({ active: false, state: "failed", message: String((e && e.message) || e) });
+        }
+      };
+      const loginHintSuffix = () => {
+        if (login.active) return "\n登录中：已打开浏览器登录页，完成后自动生效";
+        if (canLoginAssist) return "\n点击卡片 → 打开浏览器登录（" + (provider ? providerLabel(provider) : "") + "），登录后自动保存凭据";
+        return "\n点击刷新";
+      };
+      const onCardClick = () => {
+        const action = decideCardClick({ loginActive: login.active, canLoginAssist: canLoginAssist });
+        if (action === "noop") return;                       // 登录中: 忽略重复点击
+        if (action === "login") { triggerLogin(); return; }
+        setRetrySeq((s) => s + 1);
+      };
 
       const d = (state && state.display) || {};
 
@@ -528,13 +648,14 @@ window.__ModuleLoader__.load({
           else if (d.balanceText) railValue = String(d.balanceText).slice(0, 10);
           else if (typeof d.balanceUsd === "number") railValue = "$" + d.balanceUsd.toFixed(2);
         } else if (state.loaded && !state.ok && provider) {
-          railValue = "⚠";
+          railValue = canLoginAssist ? "🔑" : "⚠";
         }
+        if (login.active) railValue = "…";
         return React.createElement(
           "div",
           {
             className: "dsh-musage-card dsh-musage-card--rail",
-            title: quotaTitle(state, provider || "none", d) + "\n点击刷新",
+            title: quotaTitle(state, provider || "none", d) + loginHintSuffix(),
             onClick: onCardClick,
           },
           React.createElement("div", { className: "dsh-musage-card__head" },
@@ -574,13 +695,26 @@ window.__ModuleLoader__.load({
           title: "dsh-musage · 当前模型未在 musage 支持列表内 · " + diag,
         }, "未选中支持的 provider（" + diag + "）"));
       } else if (!state.ok) {
-        // 拉取失败
-        children.push(React.createElement("div", {
-          key: "note",
-          className: "dsh-musage-card__note",
-          style: { color: "var(--dsw-alias-state-warn-label, #f5a623)" },
-          title: "dsh-musage · " + provider + " (失败)\n" + (state.message || "unknown"),
-        }, "⚠ " + (state.message || "拉取失败")));
+        // 拉取失败: 登录助手覆盖三种 UI 状态（登录中 / 刚成功 / 可发起）;
+        // 文案选择在 loginNoteFor 纯函数里, 与测试共用。
+        const note = loginNoteFor(provider, state, login);
+        if (note) {
+          children.push(React.createElement("div", {
+            key: "note",
+            className: "dsh-musage-card__note",
+            style: note.kind === "affordance"
+              ? { color: "var(--dsw-alias-label-primary, #eee)" }
+              : undefined,
+            title: note.title,
+          }, note.text));
+        } else {
+          children.push(React.createElement("div", {
+            key: "note",
+            className: "dsh-musage-card__note",
+            style: { color: "var(--dsw-alias-state-warn-label, #f5a623)" },
+            title: "dsh-musage · " + provider + " (失败)\n" + (state.message || "unknown"),
+          }, "⚠ " + (state.message || "拉取失败")));
+        }
       } else if (Array.isArray(d.pctRows) && d.pctRows.length > 0) {
         // 通用百分比行型 (Xiaomi MiMo: 套餐/补偿/总额) —— 任意行数, tone 决定填充样式
         d.pctRows.forEach((row, i) => {
@@ -657,7 +791,7 @@ window.__ModuleLoader__.load({
         "div",
         {
           className: "dsh-musage-card",
-          title: quotaTitle(state, provider || "none", d) + "\n点击刷新",
+          title: quotaTitle(state, provider || "none", d) + loginHintSuffix(),
           onClick: onCardClick,
         },
         ...children
@@ -707,7 +841,7 @@ window.__ModuleLoader__.load({
     exports.apply = apply;
     exports.inject = ["slots", "timer", "modelDirectories"];
     /** 测试出口（node:test 直测 route→provider 映射；不参与 cordis 装配）。 */
-    exports.__test = { readActiveProvider, PROVIDER_ALIASES };
+    exports.__test = { readActiveProvider, PROVIDER_ALIASES, canLoginAssistFor, decideCardClick, loginNoteFor };
     return module.exports;
   },
 });

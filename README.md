@@ -18,8 +18,8 @@
 | `siliconflow` / `siliconflow-cn` | 余额（¥，充值/总额细分） | `api.siliconflow.cn/v1/user/info` | `SILICONFLOW_API_KEY` |
 | `tavily` | 已用 / 总量 credits + 明细 | `api.tavily.com/usage` | `TAVILY_API_KEY` |
 | `zenmux` | PAYG 余额（$，充值/奖励细分） | `zenmux.ai/api/v1/management/payg/balance` | `ZENMUX_MANAGEMENT_API_KEY`（`sk-mg-v1-`） |
-| `xiaomi-token-plan-{ams,cn,sgp}` / `xiaomi` / `mimo` … | 套餐 / 补偿 / 月总额 三行 | `platform.xiaomimimo.com/api/v1/tokenPlan/usage` | **浏览器 Cookie**（key 实测被 401，自动退 Cookie；见下） |
-| `claude` / `anthropic` / `claude-code` | 5h / 7d 双窗口 | `api.anthropic.com/api/oauth/usage` | **sessionKey Cookie**（见下） |
+| `xiaomi-token-plan-{ams,cn,sgp}` / `xiaomi` / `mimo` … | 套餐 / 补偿 / 月总额 三行 | `platform.xiaomimimo.com/api/v1/tokenPlan/usage` | **浏览器 Cookie**（key 实测被 401，自动退 Cookie；**可一键登录**，见下） |
+| `claude` / `anthropic` / `claude-code` | 5h / 7d 双窗口 | `api.anthropic.com/api/oauth/usage` | **sessionKey Cookie**（**可一键登录**，见下） |
 
 > `modlens-<provider>` 视觉包装路由会自动剥壳后映射到上游 provider。
 
@@ -28,11 +28,14 @@
 - **API Key 类（前 9 家）**：复用 DSH 模型设置里已配的 provider key
   （DSH 规范：`<PROVIDER 大写去特殊字符>_API_KEY`），无需重复填写。
 - **小米 MiMo**：**需要浏览器登录态 Cookie**（2026-10 实机：Token Plan API key 走 Bearer 会被
-  dashboard 端点 401 + loginUrl 拒绝；若命中了 key，插件会自动退 Cookie 重试一次）。获取：
-  登录 `platform.xiaomimimo.com` → F12 → Network → 任一 `/api/v1/tokenPlan/*` 请求 →
-  复制**完整 Cookie header 值**，存入 ref `XIAOMI_MIMO_COOKIE`。
-- **Claude**：从 `claude.ai` 取 `sessionKey` cookie 值，存入 ref `CLAUDE_SESSION_KEY`
-  （官方 OAuth 用量端点，插件自动带 `Anthropic-Beta: oauth-2025-04-20` 与 `claude-code` UA）。
+  dashboard 端点 401 + loginUrl 拒绝；若命中了 key，插件会自动退 Cookie 重试一次）。
+  **推荐用「一键登录」**（见下节）——卡片失败态点击即自动打开官方登录页，完成后
+  Cookie 自动写入 `XIAOMI_MIMO_COOKIE`。手动方式：登录 `platform.xiaomimimo.com` →
+  F12 → Network → 任一 `/api/v1/tokenPlan/*` 请求 → 复制**完整 Cookie header 值**存入 ref。
+- **Claude**：**推荐用「一键登录」**——点击卡片自动打开 `claude.ai` 登录页，完成后
+  `sessionKey` 自动写入 ref `CLAUDE_SESSION_KEY`（官方 OAuth 用量端点，插件自动带
+  `Anthropic-Beta: oauth-2025-04-20` 与 `claude-code` UA）。手动方式：从 `claude.ai`
+  取 `sessionKey` cookie 值存入 ref。
 - **Cookie 的存入方式**（MiMo 兜底、Claude 必需）：编辑 `~/.dsh/.credentials.yaml` 追加一行
   即可 —— DSH 凭据存储**会观察外部编辑并热生效**（不需要重启；值请用引号包裹）：
 
@@ -44,6 +47,26 @@
 
 - Cookie 会过期（Claude 约 8 小时、MiMo 随登出失效）：卡片显示 ⚠ 时重新复制一次即可。
 
+### 一键登录（登录助手，v1.5.0，推荐）
+
+对 **小米 MiMo** 与 **Claude** 两家（Cookie 型凭据，普通用户无法手工提取）：
+
+1. 卡片处于失败态（⚠ / 🔑）时 **点击卡片**；
+2. 插件弹出**专用浏览器窗口**（本机 Edge/Chrome），停在官方登录页；
+3. 你在窗口里正常登录（账号密码直接提交给官方站点，插件不接触）；
+4. 登录完成 → 窗口自动关闭 → 卡片自动显示用量。**无需 F12、无需复制、无需编辑文件。**
+
+为什么可以放心：
+
+- 窗口是**真实浏览器 + 真实官网页面**（保留地址栏，可自行核对域名）；
+- 专用 profile 存在 `~/.dsh/musage-login/`：登录态被保留（Cookie 过期后重登通常免输密码），
+  与你的日常浏览器完全隔离，可随时整个删除；
+- 插件只在登录完成后经浏览器调试协议读取该站点的 Cookie，**只写入 DSH 凭据库**
+  （打开的是独立调试端口、仅回环地址，随会话结束关闭）；
+- 登录中直接关闭浏览器窗口 = 取消；30 分钟未完成自动收尾；
+- 环境不支持时（未装 Edge/Chrome、企业策略禁用调试）卡片会提示失败原因，
+  仍可按上面的手动方式配置。
+
 ## 与上游 dsh-musage 的差异
 
 - 注册点：`conversation.input.right`（composer 内联）→ **`sidebar.footer.action`**
@@ -53,9 +76,26 @@
 - 流动进度条：5h 流动绿、7d 流动彩、通用行灰蓝（prefers-reduced-motion 自动停用）
 - 会话来源：订阅 `uiSession` 服务的 current binding（主视图会话）——见 v1.3.0
 - 点击卡片立即刷新（60s 定时刷新保留）
+- 登录助手（v1.5.0）：小米 / Claude 失败态点击卡片 → 专用浏览器登录 → 自动写入凭据
 - host 半边已扩展为 11 家（上游 5 家）
 
 ## 变更记录
+
+### v1.5.0（2026-10）登录助手：点击卡片 → 浏览器登录 → 自动获取 Cookie
+
+- **Host（`dsh/index.js`）**：新增登录助手——CDP（DevTools 协议）客户端
+  （DevToolsActivePort 发现 / WebSocket 问答 / `Network.getCookies` 读含 HttpOnly /
+  `Browser.close` 优雅关闭）；登录会话单例（Cookie 轮询 → 试调用量 API 自证 →
+  `credentials.set` 原子写入 → 优雅关窗 → 缓存失效）；新路由 `POST /musage/login`
+  （action=start|cancel）与 `GET /musage/login/status`；失败响应附 `loginAssist` 标记
+  （client 据此给出登录入口）。
+- **Client（`dsh/client.js`）**：失败态卡片显示「🔑 需要 XX 登录 · 点击卡片自动获取」；
+  登录中/刚成功过渡态文案；登录完成后自动刷新用量。点击分发与文案选择收在三个纯函数
+  （`decideCardClick` / `canLoginAssistFor` / `loginNoteFor`），可直接单测。
+- **测试**：`node --test`（全量自动发现，78 用例）——新增 login-assist 30 用例
+  （纯函数：cookie 拼接/提取、marker 判定、浏览器探测、请求解析）、cdp-integration
+  2 用例（真实 headless Edge 全链路：读 HttpOnly cookie 与 Browser.close，
+  无浏览器自动 skip）、client-login 12 用例（交互决策）。
 
 ### v1.4.0（2026-10）新增 5 家 provider
 
@@ -112,9 +152,10 @@
 - **生效方式**：client 半边（`dsh/client.js`）改完刷新页面（F5）即可；host 半边
   （`dsh/index.js`）改完需重启 DSH。pnpm 对 `file:` 依赖是**复制安装**——改源码后需在
   profile 目录 `pnpm install`（或直接同步改 `node_modules` 里的副本）。
-- **测试**：`node --test tests/parsers.test.mjs`（21 用例，21 pass）。
+- **测试**：`node --test`（全量自动发现；其中 cdp-integration 需要本机 Edge/Chrome，
+  无浏览器时自动 skip）。
 - **host 形态**：手写懒加载 bundle 协议（`window.__ModuleLoader__.load` + factory），
-  无构建步骤；`dsh/index.js` 侧为 ESM，`__parsers` 导出仅供测试。
+  无构建步骤；`dsh/index.js` 侧为 ESM，`__parsers` / `__login` 导出仅供测试。
 
 ## 源码与文档
 
