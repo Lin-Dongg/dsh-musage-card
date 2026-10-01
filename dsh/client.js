@@ -16,10 +16,14 @@
 //      100 - 已用%; 进度条填充与数值都是剩余量。
 //   4. 进度条: 5h = 流动绿色渐变, 7d = 流动彩色渐变
 //      (background-position 循环滚动动画, prefers-reduced-motion 时停用)。
-//   5. sidebar slot 没有 sessionId prop (它是 root scope, 只传 { wide }),
-//      因此当前会话的获取改为订阅 `sessions` 服务的 list store
-//      (sessions.list.getSnapshot().current === 活跃 sessionId), 再用
+//   5. sidebar slot 没有 sessionId prop (kind:"list" / scope:"root", 只传 { wide }),
+//      当前会话改用 **slot 标准 props 的 `useSessions(selector)`** 取:
+//      `useSessions((s) => s.current)` —— 这是生态内一致用法
+//      (见 dsh-client-ui-cordis: `state.current` / ui-layout: `state.byId[state.current]?.title`
+//       / settings-general: `state.phase === "ready"`), 再用
 //      modelDirectories.directoryFor(sessionId) 拿同一份 ModelDirectory。
+//      ⚠ 不要读 `sessions.list` 的原始快照: 它只有 {ids,byId,phase,projectionsBySession},
+//        没有 current 字段 —— v1.2.19 那版卡片永远显示"未选中支持的 provider"就是这个原因。
 //   6. 注入补充 CSS: 让 [data-slot="sidebar.footer.action"] 容器垂直排列
 //      (与 DSH Desktop extended/advanced 模式对同一选择器的官方覆盖一致),
 //      保证卡片始终在按钮上方而非左侧。
@@ -358,31 +362,16 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function QuotaCard(props, models, timer, sessions) {
-      // ---- 当前活跃 sessionId (sidebar slot 没有 sessionId prop,
-      //      从 sessions 服务的 list store 订阅 current) ----
-      const [sessionId, setSessionId] = React.useState(null);
-      React.useEffect(() => {
-        if (!sessions || !sessions.list || typeof sessions.list.getSnapshot !== "function") {
-          console.log("[musage-client] skip: sessions 服务不可用 → 无活跃会话");
-          setSessionId(null);
-          return;
-        }
-        const updateSession = () => {
-          try {
-            const snap = sessions.list.getSnapshot();
-            const cur = snap && snap.current;
-            console.log("[musage-client] 活跃会话变化: current=" + cur);
-            setSessionId(cur || null);
-          } catch (e) {
-            console.error("[musage-client] sessions.list 快照异常: " + ((e && e.stack) || e));
-            setSessionId(null);
-          }
-        };
-        updateSession();
-        const stop = sessions.list.subscribe(updateSession);
-        return () => { try { stop(); } catch (e) {} };
-      }, [sessions]);
+    function QuotaCard(props, models, timer) {
+      // ---- 当前活跃 sessionId ----
+      // DSH slot 的「标准 props」自带 useSessions(selector)（官方 plugin-dev 指南
+      // §Session and page data；生态内一致用法：state.current / state.byId / state.phase）。
+      // ⚠ 不要再去读 sessions.list 的原始快照——它只有 {ids,byId,phase,projectionsBySession}，
+      //   根本没有 current 字段（上一版就是栽在这里，卡片永远显示"未选中支持的 provider"）。
+      // sidebar.footer.action 是 kind:"list" / scope:"root"，props 只传 { wide }，没有 sessionId。
+      const sessionId = (props && typeof props.useSessions === "function")
+        ? props.useSessions((s) => (s ? s.current : undefined))
+        : null;
 
       // ---- 订阅活跃会话的 model directory, 提取 active provider ----
       const [provider, setProvider] = React.useState(null);
@@ -597,7 +586,6 @@ window.__ModuleLoader__.load({
       }
       const timer = ctx.timer;
       const models = ctx.modelDirectories;
-      const sessions = ctx.sessions;
       injectStyles();
       // sidebar.footer.action 是 kind:"list" slot (dsh-client-ui-sidebar 声明,
       // props 只有 { wide }); 渲染按 order 升序 → order:-100 排在 dsh-mobile
@@ -610,13 +598,13 @@ window.__ModuleLoader__.load({
             order: -100,
             label: "musage",
           },
-          (props) => QuotaCard(props, models, timer, sessions)
+          (props) => QuotaCard(props, models, timer)
         );
       });
     }
 
     exports.apply = apply;
-    exports.inject = ["slots", "timer", "modelDirectories", "sessions"];
+    exports.inject = ["slots", "timer", "modelDirectories"];
     return module.exports;
   },
 });
