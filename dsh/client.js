@@ -369,9 +369,11 @@ window.__ModuleLoader__.load({
       // ⚠ 不要再去读 sessions.list 的原始快照——它只有 {ids,byId,phase,projectionsBySession}，
       //   根本没有 current 字段（上一版就是栽在这里，卡片永远显示"未选中支持的 provider"）。
       // sidebar.footer.action 是 kind:"list" / scope:"root"，props 只传 { wide }，没有 sessionId。
-      const sessionId = (props && typeof props.useSessions === "function")
-        ? props.useSessions((s) => (s ? s.current : undefined))
+      // 取整个 sessions 状态（selector 必须是函数——无参调用会抛 "l is not a function"）
+      const sessState = (props && typeof props.useSessions === "function")
+        ? props.useSessions((s) => s)
         : null;
+      const sessionId = (sessState && sessState.current) || null;
 
       // ---- 订阅活跃会话的 model directory, 提取 active provider ----
       const [provider, setProvider] = React.useState(null);
@@ -379,7 +381,11 @@ window.__ModuleLoader__.load({
       // 失败时直接写进卡片文案 —— 省得每次都开 DevTools 捞日志。
       const [rawProvider, setRawProvider] = React.useState(null);
       const diag = !sessionId
-        ? "无活跃会话"
+        ? (!sessState
+            ? "hook 缺失"
+            : "无活跃会话[keys=" + Object.keys(sessState).slice(0, 10).join("|")
+              + " phase=" + sessState.phase
+              + " ids=" + (Array.isArray(sessState.ids) ? sessState.ids.length : "n/a") + "]")
         : (rawProvider ? ("provider=" + rawProvider) : "目录里没有 provider 字段");
       React.useEffect(() => {
         if (!models || !sessionId) {
