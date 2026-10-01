@@ -10,9 +10,25 @@
 - 卡片化：半透明玻璃材质（backdrop-filter blur + 高光描边），明暗主题通用
 - 剩余量倒数显示：已用% → 剩余% = 100 − 已用%（数值与进度条填充均为剩余量）
 - 流动进度条：5h 流动绿、7d 流动彩（prefers-reduced-motion 自动停用）
-- 会话来源：sidebar slot 无 sessionId，改订阅 `sessions.list` 的 current
+- 会话来源：sidebar（root 作用域）slot 无 sessionId，订阅 `uiSession` 服务的
+  current binding（主视图会话）——见下方 v1.3.0
 - 点击卡片立即刷新（60s 定时刷新保留）
 - host 半边（`dsh/index.js`）与上游完全一致，未做任何修改
+
+## v1.3.0：注册点回归侧边栏（修正 v1.2.19 误判）
+
+- 注册点：`conversation.input.right` → **回归 `sidebar.footer.action`**（root 作用域，
+  "移动访问"按钮上方，order -100）。v1.2.19 曾在 sidebar 上误判"root 拿不到当前会话"
+  （只翻了 sessions store 快照找 `current` 字段）而把卡片临时挪到输入框旁——位置不对。
+- 会话来源：`uiSession` 服务的 current binding（`dsh-client-ui-session` 的
+  `UiSession.publishMain`：优先保持上一次有效选择，否则取 `retainedBy.mainView>0`
+  的主视图会话；无会话时 `props.sessionId` 为 undefined）。用 scoped
+  `ctx.inject(["uiSession"], …)` 等服务就绪后注册，服务缺失时卡片占位不崩。
+  （root 作用域拿当前会话的另一条通道：`useSessions` + `retainedBy.mainView` 推导——
+  官方 layout 包 `DocumentTitle` 同款模式；详见 `dsh/client.js` 头注释第 5 条。）
+- CSS：恢复 `[data-slot="sidebar.footer.action"]` 垂直 flex 列覆盖（卡片在按钮上方）。
+- 生效：改 `dsh/client.js` 后同步到 profile 的 `node_modules` 副本（或 `pnpm install`），
+  刷新页面（F5）即可；host 半边未动，无需重启。
 
 ## v1.1.0：新增 StepFun 支持
 
@@ -35,7 +51,7 @@
 {
   "dsh": { "profile": { "bundles": [ /* ..., "dsh-musage-card"（替代 dsh-musage） */ ] } },
   "dependencies": {
-    "dsh-musage-card": "file:C:/Users/25958/.dsh/local-plugins/dsh-musage-card"
+    "dsh-musage-card": "file:D:/dsh-plugins/dsh-musage-card"
   }
 }
 ```

@@ -16,14 +16,21 @@
 //      100 - 已用%; 进度条填充与数值都是剩余量。
 //   4. 进度条: 5h = 流动绿色渐变, 7d = 流动彩色渐变
 //      (background-position 循环滚动动画, prefers-reduced-motion 时停用)。
-//   5. 注册点: `conversation.input.right` —— **session 作用域** slot，sessionId 由 slot 直接
-//      提供（契约表 standardProps 含 "sessionId: SessionId"）；这也是上游 dsh-musage 的原始注册点。
-//      ⚠ 不要放 `sidebar.footer.action`：scope=root，契约 doc 写明 "each action receives only
-//        the column state"；实测那里的会话态 = {ids,byId,phase,projectionsBySession} 无 current
-//        字段（phase=ready、ids=47 也没有），卡片会恒显示"未选中支持的 provider"（v1.2.19 即栽于此）。
+//   5. 注册点 (v1.3.0, 2026-10-01): **回归 `sidebar.footer.action`** —— root 作用域，
+//      契约 doc 写明 "each action receives only the column state"（props 只有 {wide}），
+//      没有 sessionId。会话来源改用 `uiSession` 服务的 current binding —— DSH 自己
+//      维护的"主视图会话"（见 dsh-client-ui-session 的 UiSession.publishMain：
+//      优先保持上一次有效选择，否则取 retainedBy.mainView>0 的会话）。binding 形如
+//      { key: <sessionId>, props: { sessionId } }，无会话时二者均 undefined。
+//      ⚠ 修正 v1.2.19 的误判：当时在 footer.action 上只翻 sessions store 快照找
+//        `current` 字段（快照确为 {ids,byId,phase,projectionsBySession}，无 current）
+//        就断言"root 拿不到当前会话"——不正确。两条正确通道一直是公开的：
+//        服务面 = uiSession.current；hook 面 = useSessions + retainedBy.mainView
+//        推导（layout 包 DocumentTitle 就在 root 作用域这么做）。root 都能用。
 //      拿到 sessionId 后用 modelDirectories.directoryFor(sessionId) 取同一份 ModelDirectory。
-//   6. 原 sidebar.footer.action 专用 CSS（把 slot 锚点改成垂直 flex 容器）已随注册点
-//      迁移到 conversation.input.right 一并删除 —— composer 行是既有水平布局，无需覆盖。
+//   6. 恢复 footer 容器 CSS：`[data-slot="sidebar.footer.action"]` 覆盖为垂直 flex 列
+//      （压过 SlotOutlet 的 inline display:contents），卡片渲染在"移动访问"按钮上方
+//      （order -100，按钮默认 0）。
 //
 // 功能保持不变 (继承 v0.1.1):
 //   - 跟随当前会话选中的模型自动切换 provider (含 modlens- 包装剥离);
@@ -119,8 +126,8 @@ window.__ModuleLoader__.load({
     // ============================================================
     // 卡片样式 (补充 CSS, 一次性注入 document.head)
     // ============================================================
-    // （原 [data-slot="sidebar.footer.action"] 的垂直布局覆盖已删除：注册点已迁到
-    //   conversation.input.right，composer 行自带水平布局。）
+    // （[data-slot="sidebar.footer.action"] 的垂直布局覆盖已恢复：注册点在侧边栏
+    //   footer（root 作用域），容器需要垂直 flex 列让卡片排在"移动访问"按钮上方。）
     // - .dsh-musage-card*: 卡片本体 = 半透明玻璃材质 (backdrop-filter blur
     //   + 半透明底 + 高光描边), 明暗主题通用; 文字配色走 --dsw-alias-* 变量。
     // - 进度条: 剩余量倒数显示。5h = 流动绿色渐变, 7d = 流动彩色渐变
@@ -129,6 +136,11 @@ window.__ModuleLoader__.load({
     const STYLE_TAG = "dsh-musage-cards";
 
     const CARD_CSS = [
+      "/* ---- footer 容器: 垂直 flex 列 (卡片在上、移动访问按钮在下) ---- */",
+      "[data-slot=\"sidebar.footer.action\"] {",
+      "  display: flex !important;   /* 覆盖 SlotOutlet 的 inline display:contents */",
+      "  flex-direction: column;",
+      "}",
       "/* ---- 卡片: 半透明玻璃材质 ---- */",
       ".dsh-musage-card {",
       "  box-sizing: border-box;",
@@ -347,21 +359,42 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function QuotaCard(props, models, timer) {
-      // ---- 当前 sessionId ----
-      // conversation.input.right 是 session 作用域 slot：sessionId 由 slot **直接提供**
-      // （契约表 standardProps 含 "sessionId: SessionId"），不需要任何探测。
-      // 历史教训：早前放在 sidebar.footer.action（scope=root）时，运行时状态里根本没有
-      // 当前会话——实测会话态 = {ids,byId,phase,projectionsBySession}（phase=ready、ids=47，
-      // 但无 current），面板态 = {activePanelId: undefined}，所以卡片恒显示"未选中支持的 provider"。
-      const sessionId = (props && props.sessionId) || null;
+    function QuotaCard(props, models, timer, uiSession) {
+      // ---- 当前 sessionId (v1.3.0) ----
+      // sidebar.footer.action 是 root 作用域：props 只有 {wide}，没有 sessionId。
+      // 会话来源 = `uiSession` 服务的 current binding —— DSH 自己维护的"主视图会话"
+      // （UiSession.publishMain: 优先保持上一次有效选择, 否则取 retainedBy.mainView>0
+      //   的会话）。binding 形如 { key: <sessionId>, props: { sessionId }, hooks }；
+      // 无会话时 key / props.sessionId 均为 undefined。
+      const [sessionId, setSessionId] = React.useState(null);
+      React.useEffect(() => {
+        const source = uiSession && uiSession.current;
+        if (!source || typeof source.getSnapshot !== "function" || typeof source.subscribe !== "function") {
+          console.log("[musage-client] uiSession.current 不可用 → 无会话来源");
+          setSessionId(null);
+          return;
+        }
+        const read = () => {
+          let id = null;
+          try {
+            const cur = source.getSnapshot();
+            id = (cur && ((cur.props && cur.props.sessionId) || cur.key)) || null;
+          } catch (e) {
+            console.error("[musage-client] uiSession.current 读取异常: " + ((e && e.stack) || e));
+          }
+          setSessionId(id);
+        };
+        read();
+        const stop = source.subscribe(read);
+        return () => { try { stop(); } catch (e) {} };
+      }, [uiSession]);
 
       // ---- 按当前会话的 model directory 解析 active provider ----
       const [provider, setProvider] = React.useState(null);
       // 诊断用：slot 实际报出的 provider route（映射前的原值），失败时显示在卡片上。
       const [rawProvider, setRawProvider] = React.useState(null);
       const diag = !sessionId
-        ? "slot 未提供 sessionId"
+        ? "无当前会话"
         : (rawProvider ? ("provider=" + rawProvider) : "目录里没有 provider 字段");
       React.useEffect(() => {
         if (!models || !sessionId) {
@@ -577,22 +610,35 @@ window.__ModuleLoader__.load({
       const timer = ctx.timer;
       const models = ctx.modelDirectories;
       injectStyles();
-      // conversation.input.right 是 **session 作用域** slot（契约表 scope:"session"，
-      // standardProps 含 "sessionId: SessionId"），由 client-ui-conversation 的
-      // conversation.composer.bar 条目声明 —— 也正是上游 dsh-musage 原本的注册点。
-      // ⚠ 不能放 sidebar.footer.action：那是 root 作用域，运行时状态里没有当前会话
-      //   （契约 doc 原文 "each action receives only the column state"）。
-      slots.inject("conversation.input.right", function* () {
-        yield slots.register(
-          {
-            name: "conversation.input.right",
-            id: "musage",
-            order: 100,
-            label: "musage",
-          },
-          (props) => QuotaCard(props, models, timer)
-        );
-      });
+      // sidebar.footer.action 是 root 作用域 slot（契约 doc "each action receives
+      // only the column state"），由 client-ui-sidebar 的 sidebar 条目声明，
+      // props 只有 {wide}。会话来源在 QuotaCard 内走 uiSession.current ——
+      // root 拿不到 slot 提供的 sessionId，但 root 能访问 uiSession 服务
+      // （见文件头注释第 5 条）。
+      // 用 scoped inject 等 uiSession 就绪后再注册（host 半边同款模式：
+      // ctx.inject(["webServer"], ...)）：服务缺失/晚到时只影响卡片注册，
+      // 不冻结插件其余部分，也不影响 host 半边的 /musage/quota 路由。
+      const registerInto = (scope) => {
+        const uiSession = (scope && scope.uiSession) || null;
+        console.log("[musage-client] uiSession " + (uiSession ? "已就绪" : "不可用（卡片将显示占位）"));
+        scope.slots.inject("sidebar.footer.action", function* () {
+          yield scope.slots.register(
+            {
+              name: "sidebar.footer.action",
+              id: "musage",
+              order: -100,
+              label: "musage",
+            },
+            (props) => QuotaCard(props, models, timer, uiSession)
+          );
+        });
+      };
+      if (typeof ctx.inject === "function") {
+        ctx.inject(["uiSession"], registerInto);
+      } else {
+        // 退化路径（极老环境无 scoped inject）：直接尝试，uiSession 缺失时卡片占位。
+        registerInto(ctx);
+      }
     }
 
     exports.apply = apply;
