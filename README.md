@@ -60,7 +60,7 @@
 ### v1.4.0（2026-10）新增 5 家 provider
 
 - **Host（`dsh/index.js`）**：新增 `siliconflow` / `tavily` / `zenmux` / `xiaomi` / `claude`
-  五家 PROVIDERS 条目与解析器（schema 对齐 Musage
+  五家 PROVIDERS 条目与解析器（schema 对齐 [Musage](https://github.com/Thedeergod666/Musage)
   同名实现）；`curlFetch` 增加 `cookie`（整段 Cookie header）与 `claude`
   （sessionKey + beta header + UA）两种鉴权形态。
 - **Client（`dsh/client.js`）**：新增各家 route 别名与标签；新增通用百分比行
@@ -118,8 +118,9 @@
 
 ## 源码与文档
 
+- GitHub：https://github.com/Lin-Dongg/dsh-musage-card
 - 开发说明 / 迭代记录：`docs/开发说明.md`（若从作者机器迁移，见其 `D:\deepseek工作区\musage-plugin-dev\`）
-- 数据 schemas 参考：Musage 的 `src-tauri/src/providers/*.rs`
+- 数据 schemas 参考：[Musage](https://github.com/Thedeergod666/Musage) 的 `src-tauri/src/providers/*.rs`
 
 ## License
 
