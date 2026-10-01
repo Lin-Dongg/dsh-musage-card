@@ -1,0 +1,8 @@
+# dsh bundle layer: mount the musage-card quota glass card plugin (local fork
+# of dsh-musage). The host half is the package root export (./dsh/index.js);
+# the browser half loads via the ./client export declared by the dsh.client
+# manifest in package.json. Insert id is musage-card (distinct from the
+# upstream musage id, so the two can never collide in one loader table).
+- insert:
+    - id: musage-card
+      name: dsh-musage-card
