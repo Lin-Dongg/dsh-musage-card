@@ -16,14 +16,12 @@
 //      100 - 已用%; 进度条填充与数值都是剩余量。
 //   4. 进度条: 5h = 流动绿色渐变, 7d = 流动彩色渐变
 //      (background-position 循环滚动动画, prefers-reduced-motion 时停用)。
-//   5. sidebar slot 没有 sessionId prop (kind:"list" / scope:"root", 只传 { wide }),
-//      当前会话改用 **slot 标准 props 的 `useSessions(selector)`** 取:
-//      `useSessions((s) => s.current)` —— 这是生态内一致用法
-//      (见 dsh-client-ui-cordis: `state.current` / ui-layout: `state.byId[state.current]?.title`
-//       / settings-general: `state.phase === "ready"`), 再用
-//      modelDirectories.directoryFor(sessionId) 拿同一份 ModelDirectory。
-//      ⚠ 不要读 `sessions.list` 的原始快照: 它只有 {ids,byId,phase,projectionsBySession},
-//        没有 current 字段 —— v1.2.19 那版卡片永远显示"未选中支持的 provider"就是这个原因。
+//   5. 注册点: `conversation.input.right` —— **session 作用域** slot，sessionId 由 slot 直接
+//      提供（契约表 standardProps 含 "sessionId: SessionId"）；这也是上游 dsh-musage 的原始注册点。
+//      ⚠ 不要放 `sidebar.footer.action`：scope=root，契约 doc 写明 "each action receives only
+//        the column state"；实测那里的会话态 = {ids,byId,phase,projectionsBySession} 无 current
+//        字段（phase=ready、ids=47 也没有），卡片会恒显示"未选中支持的 provider"（v1.2.19 即栽于此）。
+//      拿到 sessionId 后用 modelDirectories.directoryFor(sessionId) 取同一份 ModelDirectory。
 //   6. 注入补充 CSS: 让 [data-slot="sidebar.footer.action"] 容器垂直排列
 //      (与 DSH Desktop extended/advanced 模式对同一选择器的官方覆盖一致),
 //      保证卡片始终在按钮上方而非左侧。
@@ -135,15 +133,6 @@ window.__ModuleLoader__.load({
     const STYLE_TAG = "dsh-musage-cards";
 
     const CARD_CSS = [
-      '[data-slot="sidebar.footer.action"] {',
-      "  display: flex !important;",
-      "  flex-direction: column;",
-      "  align-items: stretch;",
-      "  gap: 6px;",
-      "  min-width: 0;",
-      "  width: 100%;",
-      "  box-sizing: border-box;",
-      "}",
       "/* ---- 卡片: 半透明玻璃材质 ---- */",
       ".dsh-musage-card {",
       "  box-sizing: border-box;",
@@ -363,41 +352,21 @@ window.__ModuleLoader__.load({
     }
 
     function QuotaCard(props, models, timer) {
-      // ---- 当前活跃 sessionId ----
-      // DSH slot 的「标准 props」自带 useSessions(selector)（官方 plugin-dev 指南
-      // §Session and page data；生态内一致用法：state.current / state.byId / state.phase）。
-      // ⚠ 不要再去读 sessions.list 的原始快照——它只有 {ids,byId,phase,projectionsBySession}，
-      //   根本没有 current 字段（上一版就是栽在这里，卡片永远显示"未选中支持的 provider"）。
-      // sidebar.footer.action 是 kind:"list" / scope:"root"，props 只传 { wide }，没有 sessionId。
-      // 取整个 sessions 状态（selector 必须是函数——无参调用会抛 "l is not a function"）
-      const sessState = (props && typeof props.useSessions === "function")
-        ? props.useSessions((s) => s)
-        : null;
-      const sessionId = (sessState && sessState.current) || null;
-      // 官方占用者 client-ui-cordis 也用 useSessions((state)=>state.current)，
-      // 但它同时拿 usePanelInfo/useInventory…。README 说「选中态属于布局存储」，
-      // 所以把面板态一并打出来，一次重启就能判定该从哪个存储取会话。
-      const panelInfo = (props && typeof props.usePanelInfo === "function")
-        ? props.usePanelInfo((i) => i)
-        : null;
+      // ---- 当前 sessionId ----
+      // conversation.input.right 是 session 作用域 slot：sessionId 由 slot **直接提供**
+      // （契约表 standardProps 含 "sessionId: SessionId"），不需要任何探测。
+      // 历史教训：早前放在 sidebar.footer.action（scope=root）时，运行时状态里根本没有
+      // 当前会话——实测会话态 = {ids,byId,phase,projectionsBySession}（phase=ready、ids=47，
+      // 但无 current），面板态 = {activePanelId: undefined}，所以卡片恒显示"未选中支持的 provider"。
+      const sessionId = (props && props.sessionId) || null;
 
-      // ---- 订阅活跃会话的 model directory, 提取 active provider ----
+      // ---- 按当前会话的 model directory 解析 active provider ----
       const [provider, setProvider] = React.useState(null);
-      // 诊断用：sidebar 实际报出的 provider route（映射前的原值）。
-      // 失败时直接写进卡片文案 —— 省得每次都开 DevTools 捞日志。
+      // 诊断用：slot 实际报出的 provider route（映射前的原值），失败时显示在卡片上。
       const [rawProvider, setRawProvider] = React.useState(null);
       const diag = !sessionId
-        ? (!sessState
-            ? "hook 缺失"
-            : "会话态[keys=" + Object.keys(sessState).slice(0, 10).join("|")
-              + " phase=" + sessState.phase
-              + " ids=" + (Array.isArray(sessState.ids) ? sessState.ids.length : "n/a")
-              + "] 面板态[" + (panelInfo
-                  ? Object.keys(panelInfo).slice(0, 10).join("|") + " active=" + (panelInfo.activePanelId || "none")
-                  : "无") + "]")
+        ? "slot 未提供 sessionId"
         : (rawProvider ? ("provider=" + rawProvider) : "目录里没有 provider 字段");
-      // 诊断串同时打一份到 Console（卡片侧边栏窄，长文本会被省略号截断）
-      React.useEffect(() => { console.log("[musage-diag] " + diag); }, [diag]);
       React.useEffect(() => {
         if (!models || !sessionId) {
           console.log("[musage-client] skip: no models or no sessionId. models=" + !!models + " sessionId=" + sessionId + " → no fallback (没订阅到 provider)");
@@ -612,15 +581,17 @@ window.__ModuleLoader__.load({
       const timer = ctx.timer;
       const models = ctx.modelDirectories;
       injectStyles();
-      // sidebar.footer.action 是 kind:"list" slot (dsh-client-ui-sidebar 声明,
-      // props 只有 { wide }); 渲染按 order 升序 → order:-100 排在 dsh-mobile
-      // ("移动访问", 默认 order 0) 之前, 即卡片在按钮上方 (容器已列布局).
-      slots.inject("sidebar.footer.action", function* () {
+      // conversation.input.right 是 **session 作用域** slot（契约表 scope:"session"，
+      // standardProps 含 "sessionId: SessionId"），由 client-ui-conversation 的
+      // conversation.composer.bar 条目声明 —— 也正是上游 dsh-musage 原本的注册点。
+      // ⚠ 不能放 sidebar.footer.action：那是 root 作用域，运行时状态里没有当前会话
+      //   （契约 doc 原文 "each action receives only the column state"）。
+      slots.inject("conversation.input.right", function* () {
         yield slots.register(
           {
-            name: "sidebar.footer.action",
+            name: "conversation.input.right",
             id: "musage",
-            order: -100,
+            order: 100,
             label: "musage",
           },
           (props) => QuotaCard(props, models, timer)
