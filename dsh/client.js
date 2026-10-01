@@ -22,9 +22,8 @@
 //        the column state"；实测那里的会话态 = {ids,byId,phase,projectionsBySession} 无 current
 //        字段（phase=ready、ids=47 也没有），卡片会恒显示"未选中支持的 provider"（v1.2.19 即栽于此）。
 //      拿到 sessionId 后用 modelDirectories.directoryFor(sessionId) 取同一份 ModelDirectory。
-//   6. 注入补充 CSS: 让 [data-slot="sidebar.footer.action"] 容器垂直排列
-//      (与 DSH Desktop extended/advanced 模式对同一选择器的官方覆盖一致),
-//      保证卡片始终在按钮上方而非左侧。
+//   6. 原 sidebar.footer.action 专用 CSS（把 slot 锚点改成垂直 flex 容器）已随注册点
+//      迁移到 conversation.input.right 一并删除 —— composer 行是既有水平布局，无需覆盖。
 //
 // 功能保持不变 (继承 v0.1.1):
 //   - 跟随当前会话选中的模型自动切换 provider (含 modlens- 包装剥离);
@@ -120,11 +119,8 @@ window.__ModuleLoader__.load({
     // ============================================================
     // 卡片样式 (补充 CSS, 一次性注入 document.head)
     // ============================================================
-    // - [data-slot="sidebar.footer.action"]: 让 SlotOutlet 渲染的 slot
-    //   锚点 (默认 display:contents) 变成垂直 flex 容器 → 卡片在上、
-    //   "移动访问"按钮在下。这与 DSH Desktop extended/advanced 模式对
-    //   同一选择器的官方覆盖行为一致, 因此在纯浏览器与 Desktop 两种
-    //   形态下布局统一。
+    // （原 [data-slot="sidebar.footer.action"] 的垂直布局覆盖已删除：注册点已迁到
+    //   conversation.input.right，composer 行自带水平布局。）
     // - .dsh-musage-card*: 卡片本体 = 半透明玻璃材质 (backdrop-filter blur
     //   + 半透明底 + 高光描边), 明暗主题通用; 文字配色走 --dsw-alias-* 变量。
     // - 进度条: 剩余量倒数显示。5h = 流动绿色渐变, 7d = 流动彩色渐变
