@@ -118,8 +118,11 @@ test("CDP: Browser.close 优雅关闭（Browser.close 通道可用性）", { tim
 
     const ws = await L.cdp.cdpOpenWs(browserWs, 10000);
     ws.send(JSON.stringify({ id: 1, method: "Browser.close", params: {} }));
-    // 等浏览器自行退出（生产 closeBrowserForSession 的优雅路径同款）
-    const deadline = Date.now() + 15000;
+    // 等浏览器自行退出（生产 closeBrowserForSession 的优雅路径同款）。
+    // 30s 上限：本用例与 session-orchestration 在同一全量套件里并发跑，
+    // 多台 headless 浏览器竞争 CPU 时退出会明显变慢（单跑实测 1-2s；
+    // 并发下曾观测到 >15s 的偶发——非功能缺陷，见 2026-10-01 flaky 记录）。
+    const deadline = Date.now() + 30000;
     while (!exited && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 200));
     }
