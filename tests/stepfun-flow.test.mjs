@@ -59,18 +59,18 @@ function preset(states) {
 }
 
 const READY_OASIS = {
-  credit: 123.45, voucherPlan: 50, voucher: 60, voucherApi: 10,
-  balance: 0, payment: 0, costMonth: 1.5,
+  credit: 0, voucher: 5.96, voucherApi: 5.96, voucherPlan: 0,
+  payment: 0, balance: 5.96, costYesterday: 4.57, costMonth: 4.47,
 };
 
-test("stepfun: oasis 已连接 → 渲染 🧾 行（Plan/Credit/赠送），不显示登录引导", () => {
+test("stepfun: oasis 已连接 → 简化布局（💰 余额+消费合并行），无重复明细", () => {
   preset([
     "s1", undefined,
     "stepfun", "stepfun", undefined,
     { ok: true, loaded: true, kind: "ok", message: null, display: {
       balanceUsd: 12, balanceText: "¥12.00", balanceLabel: "余额",
       balanceDetail: "现金 ¥10.00 · 代金券 ¥2.00",
-      oasis: READY_OASIS,
+      oasis: { balance: 5.96, costYesterday: 4.57, costMonth: 4.47, voucher: 5.96 },
       planNote: "Step Plan Credit 用量仅官网可查",
     } },
     0,
@@ -78,14 +78,16 @@ test("stepfun: oasis 已连接 → 渲染 🧾 行（Plan/Credit/赠送），不
     undefined, undefined,
   ]);
   const flat = JSON.stringify(reg.comp({ wide: true }));
-  assert.ok(flat.includes("🧾"), "应渲染 oasis 行");
-  assert.ok(flat.includes("Plan ¥50.00"), "应含 voucherPlan");
-  assert.ok(flat.includes("Credit 123.45"), "应含 credit");
-  assert.ok(flat.includes("券 ¥60.00"), "应含 voucher（券余额）");
+  assert.ok(flat.includes("💰 余额 ¥5.96"), "应渲染合并钱包行（oasis 余额）");
+  assert.ok(flat.includes("昨 ¥4.57"), "应含昨日消费");
+  assert.ok(flat.includes("本月 ¥4.47"), "应含本月消费");
   assert.ok(!flat.includes("🔑"), "oasis 已连接时不应出现登录引导");
-  // 注意: 卡片 tooltip（quotaTitle）会 JSON dump 整个 display, 其中含 planNote
-  // 字段——因此"未渲染 planNote 行"必须检查渲染行特征, 而非任意文本。
-  assert.ok(!flat.includes("Step Plan (Token Plan) 未连接"), "oasis 已连接时不应回落渲染 planNote 行");
+  // 简化后不再渲染: 🧾 明细行 / Plan ¥ 明细 / 大字余额行（2026-10-01 用户指定）
+  assert.ok(!flat.includes("🧾"), "oasis 明细行已并入钱包行");
+  assert.ok(!flat.includes("Plan ¥"), "Plan ¥ 明细应已去除");
+  assert.ok(!flat.includes("💰 余额 ¥12.00"), "oasis 在时不应回落通用 balanceText");
+  // 注意: 卡片 tooltip（quotaTitle）会 JSON dump 整个 display——以渲染行特征串判定
+  assert.ok(!flat.includes("Step Plan (Token Plan) 未连接"), "不应回落渲染 planNote 行");
 });
 
 test("stepfun: 缺 oasis + host 附 loginAssist → 登录引导行（取代 planNote）", () => {
@@ -156,8 +158,10 @@ test("stepfun: coding plan 额度行（置顶）→ Credit 百分比 + 套餐 / 
   const flat = JSON.stringify(reg.comp({ wide: true }));
   assert.ok(flat.includes("planCredit"), "应有 planCredit 行");
   assert.ok(flat.includes("Credit"), "行键应为 Credit");
+  assert.ok(flat.includes("dsh-musage-card__fill--rainbow"), "无 5h 窗口额度应为紫色流动条（2026-10-01 用户指定）");
   assert.ok(flat.includes("96%"), "剩余率 0.9556 → 96%");
   assert.ok(flat.includes("Plus 套餐"), "应含套餐名");
-  assert.ok(flat.includes("15.3/16.0亿"), "应含剩余/总量（亿）");
   assert.ok(flat.includes("重置 19d21h"), "477h36m → compact 19d21h");
+  // 额度绝对值已挪进 tooltip（视觉简化）
+  assert.ok(!flat.includes("15.3/16.0亿"), "亿明细不应直接渲染（已挪入 title）");
 });

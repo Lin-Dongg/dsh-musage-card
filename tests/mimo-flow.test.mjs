@@ -3,7 +3,8 @@
 // 背景（2026-10）：DSH 内置小米 provider id 为 xiaomi-token-plan-{ams,cn,sgp}；
 // 用户报告 MiMo 模型下卡片显示"未选中支持的 provider"。route→别名链路
 // 由 client-aliases.test.mjs 覆盖；本测试把后半段"已解析 provider=xiaomi +
-// 已加载 pctRows → 渲染树出现 MiMo 抬头与套餐/补偿/月总额三行"固化为回归。
+// 已加载 pctRows → 渲染树出现 MiMo 抬头与 月总额/补偿 行"固化为回归
+// （2026-10-01：套餐行与月总额合并；无 5h 窗口额度统一紫色流动条）。
 //
 // 运行: node --test tests/mimo-flow.test.mjs
 import { test } from "node:test";
@@ -65,21 +66,20 @@ test("MiMo 会话（provider=xiaomi + pctRows）→ 卡片渲染 MiMo 三行", (
     "s1", undefined,
     "xiaomi", "xiaomi-token-plan-ams", undefined,
     { ok: true, loaded: true, kind: "ok", message: null, display: { pctRows: [
-      { label: "套餐", pct: 30, tone: "green" },
-      { label: "补偿", pct: 10, tone: "plain" },
       { label: "月总额", pct: 60, tone: "rainbow" },
+      { label: "补偿", pct: 10, tone: "plain" },
     ] } },
     0, undefined,
   ]);
   const tree = reg.comp({ wide: true });
   const flat = JSON.stringify(tree);
   assert.ok(flat.includes("MiMo"), "抬头应为 MiMo（providerLabel(xiaomi)）");
-  assert.ok(flat.includes("套餐"), "缺套餐行");
   assert.ok(flat.includes("补偿"), "缺补偿行");
   assert.ok(flat.includes("月总额"), "缺月总额行");
-  assert.ok(flat.includes("70%"), "套餐剩余量 = 100-30");
   assert.ok(flat.includes("90%"), "补偿剩余量 = 100-10");
   assert.ok(flat.includes("40%"), "月总额剩余量 = 100-60");
+  // 套餐行已与月总额合并（2026-10-01）——渲染树不应再出现"套餐"
+  assert.ok(!flat.includes("套餐"), "套餐行应已合并进月总额");
 });
 
 test("MiMo rail 形态（侧栏收起）→ 缩写 + 主指标剩余%", () => {
@@ -87,7 +87,7 @@ test("MiMo rail 形态（侧栏收起）→ 缩写 + 主指标剩余%", () => {
     "s1", undefined,
     "xiaomi", "xiaomi-token-plan-ams", undefined,
     { ok: true, loaded: true, kind: "ok", message: null, display: { pctRows: [
-      { label: "套餐", pct: 30, tone: "green" },
+      { label: "月总额", pct: 30, tone: "rainbow" },
     ] } },
     0, undefined,
   ]);

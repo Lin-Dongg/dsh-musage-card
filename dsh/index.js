@@ -756,9 +756,12 @@ function parseXiaomiResponse(body) {
   const compPct = pickXiaomiItemPercent(usage.items, "compensation_total_token");
   const monthPct = toPct01(month.percent);
   const rows = [];
-  if (planPct !== null) rows.push({ label: "套餐", pct: planPct, tone: "green" });
+  // 套餐(plan_total)与月总额(month_total)为同一额度的两种口径, 观感重复 ——
+  // 2026-10-01 用户指定合并为一行「月总额」（优先月总额值, 缺失时套餐值兜底）。
+  // 无 5h 窗口的长周期额度统一走紫色流动条（tone: "rainbow"）。
+  const mergedPct = monthPct !== null ? monthPct : planPct;
+  if (mergedPct !== null) rows.push({ label: "月总额", pct: mergedPct, tone: "rainbow" });
   if (compPct !== null) rows.push({ label: "补偿", pct: compPct, tone: "plain" });
-  if (monthPct !== null) rows.push({ label: "月总额", pct: monthPct, tone: "rainbow" });
   if (rows.length === 0) {
     return { ok: false, kind: "parse", message: "usage/monthUsage 没有可用的 percent（套餐可能已过期）" };
   }

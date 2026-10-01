@@ -772,7 +772,7 @@ window.__ModuleLoader__.load({
             React.createElement("span", { className: "dsh-musage-card__rowKey" }, "Credit"),
             React.createElement("span", { className: "dsh-musage-card__track" },
               React.createElement("span", {
-                className: "dsh-musage-card__fill dsh-musage-card__fill--green",
+                className: "dsh-musage-card__fill dsh-musage-card__fill--rainbow",
                 style: { width: rem + "%" },
               })
             ),
@@ -780,9 +780,7 @@ window.__ModuleLoader__.load({
           ));
           const pb = [];
           if (d.stepfunPlan.name) pb.push(d.stepfunPlan.name + " 套餐" + (d.stepfunPlan.active === false ? "（未生效）" : ""));
-          if (typeof d.stepfunPlan.creditResidual === "number" && typeof d.stepfunPlan.creditTotal === "number" && d.stepfunPlan.creditTotal > 0) {
-            pb.push((d.stepfunPlan.creditResidual / 1e8).toFixed(1) + "/" + (d.stepfunPlan.creditTotal / 1e8).toFixed(1) + "亿");
-          }
+          // 额度绝对值（X.X/Y.Y 亿）挪进 title —— 视觉更简（2026-10-01 用户指定）
           if (d.stepfunPlan.creditResetIn) {
             const rc = compactResets(d.stepfunPlan.creditResetIn);
             pb.push("重置 " + (rc || "…"));
@@ -795,68 +793,74 @@ window.__ModuleLoader__.load({
             }, "📦 " + pb.join(" · ")));
           }
         }
-        const txt = d.balanceText || ("$" + (d.balanceUsd != null ? d.balanceUsd.toFixed(2) : "0.00"));
-        children.push(React.createElement("div", { key: "balance", className: "dsh-musage-card__row" },
-          React.createElement("span", { className: "dsh-musage-card__balanceLabel" }, d.balanceLabel || "余额"),
-          React.createElement("span", { className: "dsh-musage-card__balance" }, txt)
-        ));
-        // StepFun: 现金/代金券细分 (有值才显示)
-        if (d.balanceDetail) {
-          children.push(React.createElement("div", {
-            key: "balanceDetail",
-            className: "dsh-musage-card__note",
-            title: d.balanceDetail,
-          }, d.balanceDetail));
-        }
-        // StepFun: 网页登录态行（Step Plan / Credit）或登录引导
-        // （2026-10-01: account-overview 同源 Connect-JSON 接口已接入, host 侧附加
-        //   display.oasis; 缺数据时引导「点击卡片登录读取」）
         if (provider === "stepfun") {
-          if (login.active) {
+          // ── StepFun 简化版（2026-10-01 用户指定：钱包/消费合并一行, 去重复明细）──
+          if (login.active || login.state === "success") {
             children.push(React.createElement("div", {
               key: "planNote",
               className: "dsh-musage-card__note",
               title: "dsh-musage · 登录助手\n" + (login.message || ""),
-            }, "🔓 " + (login.message || "已打开浏览器，完成登录后自动生效…")));
+            }, login.active
+              ? "🔓 " + (login.message || "已打开浏览器，完成登录后自动生效…")
+              : "✓ 已登录，正在读取…"));
           } else if (d.oasis) {
             const o = d.oasis;
-            const bits = [];
-            if (typeof o.voucher === "number" && o.voucher > 0) bits.push("券 ¥" + o.voucher.toFixed(2));
-            if (typeof o.voucherPlan === "number" && o.voucherPlan > 0) bits.push("Plan ¥" + o.voucherPlan.toFixed(2));
-            if (typeof o.credit === "number" && o.credit > 0) bits.push("Credit " + o.credit);
-            if (typeof o.costYesterday === "number" && o.costYesterday > 0) bits.push("昨 ¥" + o.costYesterday.toFixed(2));
-            if (typeof o.costMonth === "number" && o.costMonth > 0) bits.push("本月 ¥" + o.costMonth.toFixed(2));
+            const ob = [];
+            if (typeof o.balance === "number") ob.push("余额 ¥" + o.balance.toFixed(2));
+            if (typeof o.costYesterday === "number" && o.costYesterday > 0) ob.push("昨 ¥" + o.costYesterday.toFixed(2));
+            if (typeof o.costMonth === "number" && o.costMonth > 0) ob.push("本月 ¥" + o.costMonth.toFixed(2));
             children.push(React.createElement("div", {
-              key: "planNote",
+              key: "wallet",
               className: "dsh-musage-card__note",
               title: "StepFun 账户总览（网页登录态实时数据）\n" + JSON.stringify(o),
-            }, "🧾 " + (bits.join(" · ") || "账户总览已连接")));
-          } else if (login.state === "success") {
+            }, "💰 " + (ob.join(" · ") || "账户总览已连接")));
+          } else {
+            // 无网页登录态: 通用余额兜底 + 登录引导
+            if (d.balanceText) {
+              const ob = ["余额 " + d.balanceText];
+              if (d.balanceDetail) ob.push(d.balanceDetail);
+              children.push(React.createElement("div", {
+                key: "wallet",
+                className: "dsh-musage-card__note",
+                title: d.balanceDetail || d.balanceText,
+              }, "💰 " + ob.join(" · ")));
+            }
+            if (canLoginAssist) {
+              children.push(React.createElement("div", {
+                key: "planNote",
+                className: "dsh-musage-card__note",
+                style: { color: "var(--dsw-alias-label-primary, #eee)" },
+                title: "dsh-musage · 登录助手\n点击卡片打开 StepFun 账号登录页，登录后自动读取 Step Plan Credit 并保存。",
+              }, "🔑 点击卡片登录读取 Step Plan Credit"));
+            } else if (d.planNote) {
+              children.push(React.createElement("div", {
+                key: "planNote",
+                className: "dsh-musage-card__note",
+                title: "Step Plan (Token Plan) 未连接，可在 platform.stepfun.com/account-overview 查看",
+              }, d.planNote));
+            }
+          }
+        } else {
+          // ── 通用余额渲染（其余 6 家）──
+          const txt = d.balanceText || ("$" + (d.balanceUsd != null ? d.balanceUsd.toFixed(2) : "0.00"));
+          children.push(React.createElement("div", { key: "balance", className: "dsh-musage-card__row" },
+            React.createElement("span", { className: "dsh-musage-card__balanceLabel" }, d.balanceLabel || "余额"),
+            React.createElement("span", { className: "dsh-musage-card__balance" }, txt)
+          ));
+          if (d.balanceDetail) {
+            children.push(React.createElement("div", {
+              key: "balanceDetail",
+              className: "dsh-musage-card__note",
+              title: d.balanceDetail,
+            }, d.balanceDetail));
+          }
+          if (d.planNote) {
             children.push(React.createElement("div", {
               key: "planNote",
               className: "dsh-musage-card__note",
-            }, "✓ 已登录，正在读取…"));
-          } else if (canLoginAssist) {
-            children.push(React.createElement("div", {
-              key: "planNote",
-              className: "dsh-musage-card__note",
-              style: { color: "var(--dsw-alias-label-primary, #eee)" },
-              title: "dsh-musage · 登录助手\n点击卡片打开 StepFun 账号登录页，登录后自动读取 Step Plan Credit 并保存。",
-            }, "🔑 点击卡片登录读取 Step Plan Credit"));
-          } else if (d.planNote) {
-            children.push(React.createElement("div", {
-              key: "planNote",
-              className: "dsh-musage-card__note",
-              title: "Step Plan (Token Plan) 未连接，可在 platform.stepfun.com/account-overview 查看",
+              title: d.planNote,
             }, d.planNote));
           }
-        } else if (d.planNote) {
-          // 其他 provider 的 planNote 兜底（目前仅 StepFun 使用，防御未来复用）
-          children.push(React.createElement("div", {
-            key: "planNote",
-            className: "dsh-musage-card__note",
-            title: d.planNote,
-          }, d.planNote));
         }
       }
 

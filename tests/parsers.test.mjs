@@ -88,7 +88,7 @@ test("zenmux: total_credits 缺失 → parse 错误", () => {
 
 // ───────────────────────── Xiaomi (MiMo) ─────────────────────────
 
-test("xiaomi: 正常响应 → 套餐/补偿/月总额 三行", () => {
+test("xiaomi: 正常响应 → 月总额/补偿 两行（套餐行已合并进月总额）", () => {
   const r = P.xiaomi({
     data: {
       usage: { percent: 0.3483, items: [
@@ -99,17 +99,18 @@ test("xiaomi: 正常响应 → 套餐/补偿/月总额 三行", () => {
     },
   });
   assert.equal(r.ok, true);
-  assert.equal(r.display.pctRows.length, 3);
-  assert.deepEqual(r.display.pctRows[0], { label: "套餐", pct: 34.8, tone: "green" });
+  assert.equal(r.display.pctRows.length, 2);
+  assert.deepEqual(r.display.pctRows[0], { label: "月总额", pct: 42, tone: "rainbow" });
   assert.deepEqual(r.display.pctRows[1], { label: "补偿", pct: 2, tone: "plain" });
-  assert.deepEqual(r.display.pctRows[2], { label: "月总额", pct: 42, tone: "rainbow" });
 });
 
-test("xiaomi: 只有套餐 percent → 单行", () => {
+test("xiaomi: 仅套餐 percent（无月总额）→ 月总额单行（套餐值兜底）", () => {
   const r = P.xiaomi({ data: { usage: { percent: 0.5 } } });
   assert.equal(r.ok, true);
   assert.equal(r.display.pctRows.length, 1);
   assert.equal(r.display.pctRows[0].pct, 50);
+  assert.equal(r.display.pctRows[0].label, "月总额");
+  assert.equal(r.display.pctRows[0].tone, "rainbow");
 });
 
 test("xiaomi: 套餐过期（无可用 percent）→ parse 错误", () => {
