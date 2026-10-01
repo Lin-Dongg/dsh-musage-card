@@ -134,3 +134,30 @@ test("stepfun: 缺 oasis 且 host 未附 loginAssist → 回落 planNote（防�
   const flat = JSON.stringify(reg.comp({ wide: true }));
   assert.ok(flat.includes("Step Plan Credit 未连接"), "无登录入口时应回落 planNote");
 });
+
+test("stepfun: coding plan 额度行（置顶）→ Credit 百分比 + 套餐 / 亿 / 重置", () => {
+  preset([
+    "s1", undefined,
+    "stepfun", "stepfun", undefined,
+    { ok: true, loaded: true, kind: "ok", message: null, display: {
+      balanceUsd: 12, balanceText: "¥12.00", balanceLabel: "余额",
+      stepfunPlan: {
+        name: "Plus", active: true, autoRenew: false,
+        creditLeftRate: 0.9556,
+        creditResidual: 1528873224, creditTotal: 1600000000,
+        creditResetIn: "477h36m 重置",
+      },
+      oasis: READY_OASIS,
+    } },
+    0,
+    { active: false, state: "idle" },
+    undefined, undefined,
+  ]);
+  const flat = JSON.stringify(reg.comp({ wide: true }));
+  assert.ok(flat.includes("planCredit"), "应有 planCredit 行");
+  assert.ok(flat.includes("Credit"), "行键应为 Credit");
+  assert.ok(flat.includes("96%"), "剩余率 0.9556 → 96%");
+  assert.ok(flat.includes("Plus 套餐"), "应含套餐名");
+  assert.ok(flat.includes("15.3/16.0亿"), "应含剩余/总量（亿）");
+  assert.ok(flat.includes("重置 19d21h"), "477h36m → compact 19d21h");
+});

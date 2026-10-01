@@ -939,20 +939,26 @@ function pickCookieValue(cookieHeader, name) {
  *  实机（2026-10-01）响应值是**字符串分**: voucher "596" = ¥5.96；
  *  金额字段统一按分 → 元转换（保留 2 位）；credit 保留原值（数量语义）。
  *  无任何可用字段 → null。 */
+/** 宽容数字解析: number 或数字字符串 → number; 其余 → null。 */
+function toNum(v) {
+  if (typeof v === "number" && isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    if (isFinite(n)) return n;
+  }
+  return null;
+}
+
+/** 分 → 元（StepFun 金额字段单位为分）。 */
+function toMoney(v) {
+  const n = toNum(v);
+  return n === null ? null : Math.round(n) / 100;
+}
+
 function parseStepfunOasis(json) {
   if (!json || typeof json !== "object" || Array.isArray(json)) return null;
-  const num = (v) => {
-    if (typeof v === "number" && isFinite(v)) return v;
-    if (typeof v === "string" && v.trim() !== "") {
-      const n = Number(v);
-      if (isFinite(n)) return n;
-    }
-    return null;
-  };
-  const money = (v) => {
-    const n = num(v);
-    return n === null ? null : Math.round(n) / 100;
-  };
+  const num = toNum;
+  const money = toMoney;
   // 实机响应用 snake_case（cost_yesterday 等）; 兼容 Connect 默认 camelCase。
   const pick = (snake, camel) => (json[snake] !== undefined ? json[snake] : json[camel]);
   const out = {
@@ -969,6 +975,42 @@ function parseStepfunOasis(json) {
   };
   if (out.credit === null && out.balance === null && out.voucherPlan === null && out.voucher === null) return null;
   return out;
+}
+
+/** 解析 StepFun QueryStepPlanRateLimit（coding plan 额度, snake_case）。
+ *  实机（2026-10-01）: plan_credit_rate_limit.subscription_credit_left_rate = 剩余率（0-1）,
+ *  credit_buckets[0] = { credit_total, credit_residual, next_reset_at, expire_at }（unix 秒）。 */
+function parseStepfunPlanRateLimit(json) {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return null;
+  const pcl = json.plan_credit_rate_limit;
+  if (!pcl || typeof pcl !== "object" || Array.isArray(pcl)) return null;
+  const buckets = Array.isArray(pcl.credit_buckets) ? pcl.credit_buckets : [];
+  const b = (buckets[0] && typeof buckets[0] === "object") ? buckets[0] : {};
+  const leftRate = toNum(pcl.subscription_credit_left_rate);
+  const total = toNum(b.credit_total);
+  if (leftRate === null && total === null) return null;
+  return {
+    creditLeftRate: leftRate,                                  // 0-1
+    creditResetAt: toNum(pcl.subscription_credit_reset_time),  // unix 秒
+    topupLeftRate: toNum(pcl.topup_credit_left_rate),
+    creditTotal: total,
+    creditResidual: toNum(b.credit_residual),
+    creditExpireAt: toNum(b.expire_at),
+    planFamily: toNum(json.plan_family),
+  };
+}
+
+/** 解析 StepFun GetStepPlanStatus（订阅信息, snake_case）。 */
+function parseStepfunPlanStatus(json) {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return null;
+  const sub = json.subscription;
+  if (!sub || typeof sub !== "object" || Array.isArray(sub)) return null;
+  return {
+    name: (typeof sub.name === "string" && sub.name.length > 0) ? sub.name : null,
+    active: toNum(sub.status) === 1,
+    expiredAt: toNum(sub.expired_at),   // unix 秒
+    autoRenew: sub.auto_renew === true,
+  };
 }
 
 /** 按 LOGIN_ASSIST[provider].extract 规则提取要写入 ref 的值。 */
@@ -1217,6 +1259,8 @@ export const __login = {
   browserCandidates,
   pickCookieValue,
   parseStepfunOasis,
+  parseStepfunPlanRateLimit,
+  parseStepfunPlanStatus,
   loginStatusSnapshot,
   parseLoginRequest,
   readJsonBody,
@@ -1445,10 +1489,30 @@ export function apply(ctx) {
         try {
           const hit = await ctx.credentials.resolve("STEPFUN_COOKIE");
           if (hit && hit.value) {
-            const oasis = await probeStepfunOasis(hit.value);
+            // 并行: 账户总览 + coding plan（Step Plan 额度/订阅, 两条 RPC）
+            const [oasis, plan] = await Promise.all([
+              probeStepfunOasis(hit.value),
+              fetchStepfunPlan(hit.value),
+            ]);
             if (oasis.ok && oasis.data) parsed.display.oasis = oasis.data;
+            if (plan) {
+              const p = {};
+              if (plan.status) {
+                p.name = plan.status.name;
+                p.active = plan.status.active;
+                p.autoRenew = plan.status.autoRenew;
+                if (plan.status.expiredAt) p.expiredIn = formatResetsIn(plan.status.expiredAt * 1000);
+              }
+              if (plan.rate) {
+                p.creditLeftRate = plan.rate.creditLeftRate;
+                p.creditTotal = plan.rate.creditTotal;
+                p.creditResidual = plan.rate.creditResidual;
+                if (plan.rate.creditResetAt) p.creditResetIn = formatResetsIn(plan.rate.creditResetAt * 1000);
+              }
+              parsed.display.stepfunPlan = p;
+            }
           }
-        } catch (e) { /* oasis 附加失败不影响主结果 */ }
+        } catch (e) { /* stepfun 附加数据失败不影响主结果 */ }
       }
     }
     return parsed;
@@ -1563,6 +1627,28 @@ export function apply(ctx) {
     const data = parseStepfunOasis(json);
     if (!data) return { ok: false, message: "账户总览响应无可用字段: " + String(raw.body).slice(0, 120) };
     return { ok: true, data: data };
+  }
+
+  /** StepFun coding plan（Step Plan）额度 + 订阅 —— account-overview 同源两条 RPC
+   *  （2026-10-01 实机实证; 同一 oasis 认证配方）。任一失败给部分/ null, 静默。 */
+  const STEPFUN_PLAN_URL = "https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryStepPlanRateLimit";
+  const STEPFUN_STATUS_URL = "https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/GetStepPlanStatus";
+  async function fetchStepfunPlan(cookieHeader) {
+    const opts = {
+      method: "POST",
+      headers: ["Content-Type: application/json", "Connect-Protocol-Version: 1"],
+      body: "{}",
+    };
+    const [rateRaw, statusRaw] = await Promise.all([
+      curlFetch(STEPFUN_PLAN_URL, cookieHeader, "oasis", opts).catch(function () { return { ok: false }; }),
+      curlFetch(STEPFUN_STATUS_URL, cookieHeader, "oasis", opts).catch(function () { return { ok: false }; }),
+    ]);
+    let rate = null;
+    let status = null;
+    if (rateRaw && rateRaw.ok) { try { rate = parseStepfunPlanRateLimit(JSON.parse(rateRaw.body)); } catch (e) {} }
+    if (statusRaw && statusRaw.ok) { try { status = parseStepfunPlanStatus(JSON.parse(statusRaw.body)); } catch (e) {} }
+    if (!rate && !status) return null;
+    return { rate: rate, status: status };
   }
 
   /** 用临时 cookie 值试调用量 API（复用 curlFetch + parser；不写任何缓存）。 */

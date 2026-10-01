@@ -354,3 +354,43 @@ test("LOGIN_ASSIST: stepfun 条目 —— ref / 登录页 / 标记 cookie / 换�
   assert.ok(String(cfg.via.returnUrl).includes("returnTo"), "换票 URL 应带 returnTo");
   assert.ok(String(cfg.via.returnUrl).includes("account.stepfun.com"));
 });
+
+// ───────────────────────── parseStepfunPlanRateLimit / Status ─────────────────────────
+
+test("parseStepfunPlanRateLimit: 实机形状 → 剩余率 / buckets（coding plan 额度）", () => {
+  const r = L.parseStepfunPlanRateLimit({
+    status: 1, desc: "", five_hour_usage_left_rate: 0, weekly_usage_left_rate: 0, plan_family: 2,
+    plan_credit_rate_limit: {
+      subscription_credit_left_rate: 0.9555458,
+      subscription_credit_reset_time: "1792580265",
+      topup_credit_left_rate: 0,
+      credit_buckets: [{ type: 1, credit_total: "1600000000", credit_residual: "1528873224", expire_at: "1796357377", next_reset_at: "1792580265" }],
+    },
+  });
+  assert.equal(r.creditLeftRate, 0.9555458);
+  assert.equal(r.creditTotal, 1600000000);
+  assert.equal(r.creditResidual, 1528873224);
+  assert.equal(r.creditResetAt, 1792580265);
+  assert.equal(r.planFamily, 2);
+});
+
+test("parseStepfunPlanRateLimit: 无 plan_credit_rate_limit → null", () => {
+  assert.equal(L.parseStepfunPlanRateLimit(null), null);
+  assert.equal(L.parseStepfunPlanRateLimit({ status: 1 }), null);
+});
+
+test("parseStepfunPlanStatus: 实机形状 → 套餐名 / 到期 / 续费", () => {
+  const r = L.parseStepfunPlanStatus({
+    status: 1,
+    subscription: { plan_type: 1, name: "Plus", status: 1, activated_at: "1789877377", expired_at: "1796357377", auto_renew: false, plan_id: "21", plan_family: 2 },
+  });
+  assert.equal(r.name, "Plus");
+  assert.equal(r.active, true);
+  assert.equal(r.expiredAt, 1796357377);
+  assert.equal(r.autoRenew, false);
+});
+
+test("parseStepfunPlanStatus: 无 subscription → null", () => {
+  assert.equal(L.parseStepfunPlanStatus(null), null);
+  assert.equal(L.parseStepfunPlanStatus({ status: 0 }), null);
+});

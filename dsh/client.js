@@ -765,6 +765,36 @@ window.__ModuleLoader__.load({
         });
       } else {
         // 余额型 (DeepSeek / OpenRouter / StepFun / SiliconFlow / ZenMux / Tavily)
+        // StepFun coding plan（Step Plan）额度行 —— 置顶（用户主关注; 2026-10-01 接入）
+        if (provider === "stepfun" && d.stepfunPlan && typeof d.stepfunPlan.creditLeftRate === "number") {
+          const rem = Math.max(0, Math.min(100, Math.round(d.stepfunPlan.creditLeftRate * 100)));
+          children.push(React.createElement("div", { key: "planCredit", className: "dsh-musage-card__row" },
+            React.createElement("span", { className: "dsh-musage-card__rowKey" }, "Credit"),
+            React.createElement("span", { className: "dsh-musage-card__track" },
+              React.createElement("span", {
+                className: "dsh-musage-card__fill dsh-musage-card__fill--green",
+                style: { width: rem + "%" },
+              })
+            ),
+            React.createElement("span", { className: "dsh-musage-card__rowValue" }, rem + "%")
+          ));
+          const pb = [];
+          if (d.stepfunPlan.name) pb.push(d.stepfunPlan.name + " 套餐" + (d.stepfunPlan.active === false ? "（未生效）" : ""));
+          if (typeof d.stepfunPlan.creditResidual === "number" && typeof d.stepfunPlan.creditTotal === "number" && d.stepfunPlan.creditTotal > 0) {
+            pb.push((d.stepfunPlan.creditResidual / 1e8).toFixed(1) + "/" + (d.stepfunPlan.creditTotal / 1e8).toFixed(1) + "亿");
+          }
+          if (d.stepfunPlan.creditResetIn) {
+            const rc = compactResets(d.stepfunPlan.creditResetIn);
+            pb.push("重置 " + (rc || "…"));
+          }
+          if (pb.length > 0) {
+            children.push(React.createElement("div", {
+              key: "planMeta",
+              className: "dsh-musage-card__note",
+              title: "Step Plan（coding plan）额度\n" + JSON.stringify(d.stepfunPlan),
+            }, "📦 " + pb.join(" · ")));
+          }
+        }
         const txt = d.balanceText || ("$" + (d.balanceUsd != null ? d.balanceUsd.toFixed(2) : "0.00"));
         children.push(React.createElement("div", { key: "balance", className: "dsh-musage-card__row" },
           React.createElement("span", { className: "dsh-musage-card__balanceLabel" }, d.balanceLabel || "余额"),
