@@ -71,6 +71,20 @@ window.__ModuleLoader__.load({
       "zhipu": "zhipu",
       "stepfun": "stepfun",
       "stepfun-plan": "stepfun",        // pi 生态同名的 Step Plan route id
+      // ── 2026-10 扩展 5 家 ──
+      "siliconflow": "siliconflow",
+      "siliconflow-cn": "siliconflow",
+      "tavily": "tavily",
+      "zenmux": "zenmux",
+      "xiaomi": "xiaomi",
+      "xiaomimimo": "xiaomi",
+      "xiaomi-mimo": "xiaomi",
+      "mimo": "xiaomi",
+      "mimo-api": "xiaomi",
+      "claude": "claude",
+      "anthropic": "claude",
+      "claude-official": "claude",
+      "claude-code": "claude",
     };
 
     function readActiveProvider(snapshot) {
@@ -110,6 +124,11 @@ window.__ModuleLoader__.load({
       if (p === "openrouter") return "OpenRouter";
       if (p === "zhipu") return "Zhipu";
       if (p === "stepfun") return "StepFun";
+      if (p === "siliconflow") return "SiliconFlow";
+      if (p === "tavily") return "Tavily";
+      if (p === "zenmux") return "ZenMux";
+      if (p === "xiaomi") return "MiMo";
+      if (p === "claude") return "Claude";
       return p;
     }
 
@@ -120,6 +139,11 @@ window.__ModuleLoader__.load({
       if (p === "openrouter") return "OR";
       if (p === "zhipu") return "ZP";
       if (p === "stepfun") return "SF";
+      if (p === "siliconflow") return "硅基";
+      if (p === "tavily") return "TV";
+      if (p === "zenmux") return "ZM";
+      if (p === "xiaomi") return "MiMo";
+      if (p === "claude") return "CL";
       return "···";
     }
 
@@ -255,6 +279,13 @@ window.__ModuleLoader__.load({
       "  background-size: 300% 100%;",
       "  animation: dsh-musage-flow-rainbow 8s linear infinite;",
       "}",
+      "/* 通用行型第三色: 中性灰蓝 (MiMo 补偿行等) */",
+      ".dsh-musage-card__fill--plain {",
+      "  background-image: linear-gradient(90deg,",
+      "    #64748b, #94a3b8, #cbd5e1, #94a3b8, #64748b);",
+      "  background-size: 200% 100%;",
+      "  animation: dsh-musage-flow-green 3.4s linear infinite;",
+      "}",
       "@keyframes dsh-musage-flow-green {",
       "  from { background-position: 0% 50%; }",
       "  to { background-position: -200% 50%; }",
@@ -265,7 +296,8 @@ window.__ModuleLoader__.load({
       "}",
       "@media (prefers-reduced-motion: reduce) {",
       "  .dsh-musage-card__fill--green,",
-      "  .dsh-musage-card__fill--rainbow { animation: none; }",
+      "  .dsh-musage-card__fill--rainbow,",
+      "  .dsh-musage-card__fill--plain { animation: none; }",
       "}",
       ".dsh-musage-card__rowValue {",
       "  flex: none;",
@@ -482,7 +514,12 @@ window.__ModuleLoader__.load({
         if (state.loaded && state.ok) {
           const rem = remainingPct(d.fiveHrPct);
           if (rem !== null) railValue = rem + "%";
-          else if (d.balanceText) railValue = d.balanceText;
+          else if (Array.isArray(d.pctRows) && d.pctRows.length > 0) {
+            // 通用行型 (MiMo): rail 取第一行 (主指标) 的剩余百分比
+            const firstRem = remainingPct(d.pctRows[0].pct);
+            railValue = firstRem === null ? "···" : firstRem + "%";
+          }
+          else if (d.balanceText) railValue = String(d.balanceText).slice(0, 10);
           else if (typeof d.balanceUsd === "number") railValue = "$" + d.balanceUsd.toFixed(2);
         } else if (state.loaded && !state.ok && provider) {
           railValue = "⚠";
@@ -538,6 +575,26 @@ window.__ModuleLoader__.load({
           style: { color: "var(--dsw-alias-state-warn-label, #f5a623)" },
           title: "dsh-musage · " + provider + " (失败)\n" + (state.message || "unknown"),
         }, "⚠ " + (state.message || "拉取失败")));
+      } else if (Array.isArray(d.pctRows) && d.pctRows.length > 0) {
+        // 通用百分比行型 (Xiaomi MiMo: 套餐/补偿/总额) —— 任意行数, tone 决定填充样式
+        d.pctRows.forEach((row, i) => {
+          const rem = remainingPct(row.pct);
+          const remText = rem === null ? "—" : rem + "%";
+          const remWidth = rem === null ? 0 : rem;
+          const tone = row.tone === "green" ? "dsh-musage-card__fill--green"
+            : row.tone === "rainbow" ? "dsh-musage-card__fill--rainbow"
+            : "dsh-musage-card__fill--plain";
+          children.push(React.createElement("div", { key: "prow" + i, className: "dsh-musage-card__row" },
+            React.createElement("span", { className: "dsh-musage-card__rowKey" }, row.label || "—"),
+            React.createElement("span", { className: "dsh-musage-card__track" },
+              React.createElement("span", {
+                className: "dsh-musage-card__fill " + tone,
+                style: { width: remWidth + "%" },
+              })
+            ),
+            React.createElement("span", { className: "dsh-musage-card__rowValue" }, remText)
+          ));
+        });
       } else if (typeof d.fiveHrPct === "number" || typeof d.weeklyPct === "number") {
         // 百分比型 (MiniMax / Kimi / Zhipu): 5h 流动绿 + 7d 流动彩, 剩余量倒数
         // rows: [key, fillClass]
@@ -566,10 +623,10 @@ window.__ModuleLoader__.load({
           ));
         });
       } else {
-        // 余额型 (DeepSeek / OpenRouter / StepFun)
+        // 余额型 (DeepSeek / OpenRouter / StepFun / SiliconFlow / ZenMux / Tavily)
         const txt = d.balanceText || ("$" + (d.balanceUsd != null ? d.balanceUsd.toFixed(2) : "0.00"));
         children.push(React.createElement("div", { key: "balance", className: "dsh-musage-card__row" },
-          React.createElement("span", { className: "dsh-musage-card__balanceLabel" }, "余额"),
+          React.createElement("span", { className: "dsh-musage-card__balanceLabel" }, d.balanceLabel || "余额"),
           React.createElement("span", { className: "dsh-musage-card__balance" }, txt)
         ));
         // StepFun: 现金/代金券细分 (有值才显示)

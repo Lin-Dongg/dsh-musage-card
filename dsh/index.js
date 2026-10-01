@@ -107,6 +107,53 @@ const PROVIDERS = {
     },
     parse: parseStepfunResponse,
   },
+  // ── 以下为 2026-10 扩展的 5 家（对齐 Musage 对应用量源）──
+  siliconflow: {
+    refs: ["SILICONFLOW_API_KEY"],
+    urls: {
+      SILICONFLOW_API_KEY: "https://api.siliconflow.cn/v1/user/info",
+    },
+    parse: parseSiliconflowResponse,
+  },
+  tavily: {
+    refs: ["TAVILY_API_KEY"],
+    urls: {
+      TAVILY_API_KEY: "https://api.tavily.com/usage",
+    },
+    parse: parseTavilyResponse,
+  },
+  zenmux: {
+    refs: ["ZENMUX_MANAGEMENT_API_KEY", "ZENMUX_API_KEY"],
+    urls: {
+      ZENMUX_MANAGEMENT_API_KEY: "https://zenmux.ai/api/v1/management/payg/balance",
+      ZENMUX_API_KEY:            "https://zenmux.ai/api/v1/management/payg/balance",
+    },
+    parse: parseZenmuxResponse,
+  },
+  xiaomi: {
+    // MiMo 用量走 dashboard admin API, 凭据是"整段 Cookie header 值"(非 Bearer).
+    // refs 候选: 专有 cookie ref 优先; XIAOMI_API_KEY 兼容"把 cookie 贴进 key 槽"的用户.
+    refs: ["XIAOMI_MIMO_COOKIE", "XIAOMI_COOKIE", "MIMO_COOKIE", "XIAOMI_API_KEY"],
+    urls: {
+      XIAOMI_MIMO_COOKIE: "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+      XIAOMI_COOKIE:      "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+      MIMO_COOKIE:        "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+      XIAOMI_API_KEY:     "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+    },
+    parse: parseXiaomiResponse,
+    authStyle: "cookie",
+  },
+  claude: {
+    // Claude 官方 OAuth 用量 (Claude Pro / Max 订阅): 凭据是 claude.ai 的 sessionKey cookie.
+    refs: ["CLAUDE_SESSION_KEY", "ANTHROPIC_SESSION_KEY", "CLAUDE_CODE_SESSION_KEY"],
+    urls: {
+      CLAUDE_SESSION_KEY:      "https://api.anthropic.com/api/oauth/usage",
+      ANTHROPIC_SESSION_KEY:   "https://api.anthropic.com/api/oauth/usage",
+      CLAUDE_CODE_SESSION_KEY: "https://api.anthropic.com/api/oauth/usage",
+    },
+    parse: parseClaudeResponse,
+    authStyle: "claude",
+  },
 };
 
 function nowMs() {
@@ -436,6 +483,264 @@ function parseStepfunResponse(body) {
   };
 }
 
+// ----- siliconflow parser (Musage siliconflow.rs; schema 2026-06 官方 API ref 实测) -----
+//   { "code": 20000, "message": "OK", "status": true,
+//     "data": { "balance": "0.88", "chargeBalance": "88.00", "totalBalance": "88.88" } }
+// balance = 剩余可用余额（字符串数字）；chargeBalance = 充值余额；totalBalance = 总余额。
+
+function parseSiliconflowResponse(body) {
+  let json;
+  try {
+    json = typeof body === "string" ? JSON.parse(body) : body;
+  } catch {
+    return { ok: false, kind: "parse", message: "JSON 解析失败" };
+  }
+  if (!json || typeof json !== "object") {
+    return { ok: false, kind: "parse", message: "SiliconFlow 响应不是对象" };
+  }
+  // HTTP 200 但业务码非 20000：典型为鉴权失败 / key 无效。
+  const code = json.code;
+  if (code !== undefined && code !== null && Number(code) !== 20000) {
+    return { ok: false, kind: "server_error", message: "SiliconFlow 业务码 " + code + " · " + (json.message || "") };
+  }
+  const data = json.data;
+  if (!data || typeof data !== "object") {
+    return { ok: false, kind: "parse", message: "data 字段缺失" };
+  }
+  const balance = parseFloat(data.balance);
+  if (!isFinite(balance)) {
+    return { ok: false, kind: "parse", message: "data.balance 缺失或不是数字: " + data.balance };
+  }
+  const charge = parseFloat(data.chargeBalance);
+  const total = parseFloat(data.totalBalance);
+  const detailParts = [];
+  if (isFinite(charge)) detailParts.push("充值 " + formatBalance(charge, "CNY"));
+  if (isFinite(total)) detailParts.push("总额 " + formatBalance(total, "CNY"));
+  return {
+    ok: true,
+    provider: "siliconflow",
+    balance,
+    currency: "CNY",
+    display: {
+      balanceUsd: balance,          // client 余额型分支复用该字段；单位实际是 CNY
+      balanceText: formatBalance(balance, "CNY"),
+      balanceDetail: detailParts.length ? detailParts.join(" · ") : null,
+    },
+  };
+}
+
+// ----- tavily parser (Musage tavily.rs; docs /usage endpoint) -----
+//   { "account": { "current_plan": "Researcher", ... },
+//     "key": { "usage": 150, "limit": 1000, "search_usage": 80, "extract_usage": 20,
+//              "crawl_usage": 0, "map_usage": 0, "research_usage": 50 } }
+// Tavily 是 search API（非 LLM）：展示「已用 / 总量 credits」；部分套餐 limit 为 null。
+
+function parseTavilyResponse(body) {
+  let json;
+  try {
+    json = typeof body === "string" ? JSON.parse(body) : body;
+  } catch {
+    return { ok: false, kind: "parse", message: "JSON 解析失败" };
+  }
+  if (!json || typeof json !== "object") {
+    return { ok: false, kind: "parse", message: "Tavily 响应不是对象" };
+  }
+  const key = json.key;
+  if (!key || typeof key !== "object") {
+    return { ok: false, kind: "parse", message: "key 字段缺失" };
+  }
+  const used = Number(key.usage);
+  if (!isFinite(used)) {
+    return { ok: false, kind: "parse", message: "key.usage 缺失或不是数字" };
+  }
+  // Researcher 等套餐 limit=null（表示按量上限不固定）——此时只显示已用。
+  const limit = key.limit === null || !isFinite(Number(key.limit)) ? null : Number(key.limit);
+  const plan = json.account && typeof json.account.current_plan === "string" ? json.account.current_plan : null;
+  const text = limit === null ? (used + " credits 已用") : (used + " / " + limit + " credits");
+  const detailDefs = [
+    ["search_usage", "搜索"],
+    ["extract_usage", "提取"],
+    ["crawl_usage", "抓取"],
+    ["map_usage", "地图"],
+    ["research_usage", "研究"],
+  ];
+  const detailParts = [];
+  for (const [field, label] of detailDefs) {
+    const v = Number(key[field]);
+    if (isFinite(v) && v > 0) detailParts.push(label + " " + v);
+  }
+  const notes = [];
+  if (plan) notes.push("套餐 " + plan);
+  if (detailParts.length) notes.push(detailParts.join(" · "));
+  return {
+    ok: true,
+    provider: "tavily",
+    display: {
+      balanceLabel: "用量",
+      balanceText: text,
+      balanceDetail: notes.length ? notes.join(" — ") : null,
+    },
+  };
+}
+
+// ----- zenmux parser (Musage zenmux.rs; PAYG 余额端点, docs zenmux.ai/docs/zh/api/platform/payg-balance.html) -----
+//   { "success": true, "data": { "currency": "usd", "total_credits": 482.74,
+//                                "top_up_credits": 35.0, "bonus_credits": 447.74 } }
+// total_credits = top_up_credits + bonus_credits。凭据须为 Management API Key（sk-mg-v1- 前缀）。
+
+function parseZenmuxResponse(body) {
+  let json;
+  try {
+    json = typeof body === "string" ? JSON.parse(body) : body;
+  } catch {
+    return { ok: false, kind: "parse", message: "JSON 解析失败" };
+  }
+  if (!json || typeof json !== "object") {
+    return { ok: false, kind: "parse", message: "ZenMux 响应不是对象" };
+  }
+  if (json.success !== true) {
+    return { ok: false, kind: "server_error", message: "ZenMux success != true" + (json.message ? " · " + json.message : "") };
+  }
+  const data = json.data;
+  if (!data || typeof data !== "object") {
+    return { ok: false, kind: "parse", message: "data 字段缺失" };
+  }
+  const total = Number(data.total_credits);
+  if (!isFinite(total)) {
+    return { ok: false, kind: "parse", message: "data.total_credits 缺失或不是数字" };
+  }
+  const topUp = Number(data.top_up_credits);
+  const bonus = Number(data.bonus_credits);
+  const detailParts = [];
+  if (isFinite(topUp)) detailParts.push("充值 " + formatBalance(topUp, "USD"));
+  if (isFinite(bonus)) detailParts.push("奖励 " + formatBalance(bonus, "USD"));
+  return {
+    ok: true,
+    provider: "zenmux",
+    balance: total,
+    currency: "USD",
+    display: {
+      balanceUsd: total,
+      balanceText: formatBalance(total, "USD"),
+      balanceDetail: detailParts.length ? detailParts.join(" · ") : null,
+    },
+  };
+}
+
+// ----- xiaomi (MiMo) parser (Musage xiaomi.rs; dashboard admin API, 凭据=整段 Cookie header) -----
+//   data.usage.percent      = 套餐用量（plan_total_token，0-1 小数）
+//   data.usage.items[]      = 逐项（含 compensation_total_token 补偿积分）
+//   data.monthUsage.percent = 本月总额度（month_total_token，0-1 小数）
+// 一律换算成 0-100 百分比；映射为 pctRows（套餐 / 补偿 / 月总额），只输出存在的行。
+
+/** 0-1 小数（或容错 0-100）→ 0-100 百分比数值（保留 1 位小数）。 */
+function toPct01(v) {
+  const n = Number(v);
+  if (!isFinite(n) || n < 0) return null;
+  if (n <= 1) return Math.round(n * 1000) / 10;
+  if (n <= 100) return Math.round(n * 10) / 10;
+  return null;
+}
+
+/** 在 items[] 里按 name 找某项的 percent。 */
+function pickXiaomiItemPercent(items, itemName) {
+  if (!Array.isArray(items)) return null;
+  for (const item of items) {
+    if (item && item.name === itemName) return toPct01(item.percent);
+  }
+  return null;
+}
+
+function parseXiaomiResponse(body) {
+  let json;
+  try {
+    json = typeof body === "string" ? JSON.parse(body) : body;
+  } catch {
+    return { ok: false, kind: "parse", message: "JSON 解析失败" };
+  }
+  if (!json || typeof json !== "object") {
+    return { ok: false, kind: "parse", message: "MiMo 响应不是对象" };
+  }
+  const data = json.data;
+  if (!data || typeof data !== "object") {
+    return { ok: false, kind: "parse", message: "data 字段缺失（Cookie 可能已过期）" };
+  }
+  const usage = data.usage && typeof data.usage === "object" ? data.usage : {};
+  const month = data.monthUsage && typeof data.monthUsage === "object" ? data.monthUsage : {};
+  const planPct = toPct01(usage.percent);
+  const compPct = pickXiaomiItemPercent(usage.items, "compensation_total_token");
+  const monthPct = toPct01(month.percent);
+  const rows = [];
+  if (planPct !== null) rows.push({ label: "套餐", pct: planPct, tone: "green" });
+  if (compPct !== null) rows.push({ label: "补偿", pct: compPct, tone: "plain" });
+  if (monthPct !== null) rows.push({ label: "月总额", pct: monthPct, tone: "rainbow" });
+  if (rows.length === 0) {
+    return { ok: false, kind: "parse", message: "usage/monthUsage 没有可用的 percent（套餐可能已过期）" };
+  }
+  return {
+    ok: true,
+    provider: "xiaomi",
+    display: { pctRows: rows },
+  };
+}
+
+// ----- claude official parser (Musage claude_official.rs; api.anthropic.com/api/oauth/usage) -----
+//   { "five_hour": { "utilization": 72.0, "resets_at": "2026-06-16T18:30:00.000Z" },
+//     "seven_day": { "utilization": 45.0, "resets_at": "2026-06-19T03:00:00.000Z" } }
+// utilization = 已用百分比 0-100（overage 可能超 100 → 夹取）。映射为 5h + 7d 双行。
+
+/** ISO 8601 字符串或 epoch（秒/毫秒）→ 毫秒时间戳。 */
+function parseIsoOrEpochMs(v) {
+  if (typeof v === "number") {
+    if (v >= 1e12 && v <= 4e12) return v;
+    if (v > 1e9) return v * 1000;
+    return null;
+  }
+  if (typeof v === "string" && v.length > 0) {
+    const t = Date.parse(v);
+    return isNaN(t) ? null : t;
+  }
+  return null;
+}
+
+function parseClaudeResponse(body) {
+  let json;
+  try {
+    json = typeof body === "string" ? JSON.parse(body) : body;
+  } catch {
+    return { ok: false, kind: "parse", message: "JSON 解析失败" };
+  }
+  if (!json || typeof json !== "object") {
+    return { ok: false, kind: "parse", message: "Claude 响应不是对象" };
+  }
+  const five = json.five_hour && typeof json.five_hour === "object" ? json.five_hour : null;
+  const week = json.seven_day && typeof json.seven_day === "object" ? json.seven_day : null;
+  if (!five && !week) {
+    return { ok: false, kind: "parse", message: "five_hour / seven_day 都缺失（sessionKey 可能无效）" };
+  }
+  const utilOf = (w) => {
+    if (!w) return null;
+    const u = Number(w.utilization);
+    if (!isFinite(u)) return null;
+    return Math.max(0, Math.min(100, Math.round(u * 10) / 10));
+  };
+  const fivePct = utilOf(five);
+  const weekPct = utilOf(week);
+  if (fivePct === null && weekPct === null) {
+    return { ok: false, kind: "parse", message: "utilization 字段缺失" };
+  }
+  return {
+    ok: true,
+    provider: "claude",
+    display: {
+      fiveHrPct: fivePct,
+      weeklyPct: weekPct,
+      fiveHrResetsIn: five && five.resets_at ? formatResetsIn(parseIsoOrEpochMs(five.resets_at)) : null,
+      weeklyResetsIn: week && week.resets_at ? formatResetsIn(parseIsoOrEpochMs(week.resets_at)) : null,
+    },
+  };
+}
+
 function formatBalance(n, currency) {
   // 简洁显示: 数字 + currency 符号. 大数取整, 小数 2 位.
   const symbol = currency === "CNY" ? "¥" : currency === "USD" ? "$" : "";
@@ -500,6 +805,21 @@ function isTrustedRequest(req) {
   }
 }
 
+/** 纯解析函数测试出口（node:test 直接调用；不参与 cordis 装配）。 */
+export const __parsers = {
+  minimax: parseMinimaxResponse,
+  deepseek: parseDeepseekBalance,
+  kimi: parseKimiResponse,
+  openrouter: parseOpenrouterResponse,
+  zhipu: parseZhipuResponse,
+  stepfun: parseStepfunResponse,
+  siliconflow: parseSiliconflowResponse,
+  tavily: parseTavilyResponse,
+  zenmux: parseZenmuxResponse,
+  xiaomi: parseXiaomiResponse,
+  claude: parseClaudeResponse,
+};
+
 export function apply(ctx) {
   // 每个 provider 一份 cache. key: provider 名.
   const cache = Object.create(null);
@@ -548,10 +868,25 @@ export function apply(ctx) {
     const subprocess = ctx.subprocess;
     if (!subprocess) throw new Error("subprocess service 不可用");
     const c = await resolveCurl();
-    // zhipu 特殊: Authorization 不加 "Bearer " 前缀 (来自 Musage zhipu.rs 注释)
-    const authHeader = (authStyle === "raw")
-      ? "Authorization: " + key
-      : "Authorization: Bearer " + key;
+    // authStyle 分派 (2026-10 扩展):
+    //   raw    (zhipu)  → Authorization: <key>（不加 Bearer 前缀, 来自 Musage zhipu.rs 注释）
+    //   cookie (xiaomi) → Cookie: <整段 Cookie header 值>
+    //   claude (claude) → Cookie: sessionKey=<key> + Anthropic-Beta + claude-code UA
+    //   其它            → Authorization: Bearer <key>
+    let authArgs;
+    if (authStyle === "raw") {
+      authArgs = ["-H", "Authorization: " + key];
+    } else if (authStyle === "cookie") {
+      authArgs = ["-H", "Cookie: " + key];
+    } else if (authStyle === "claude") {
+      authArgs = [
+        "-H", "Cookie: sessionKey=" + key,
+        "-H", "Anthropic-Beta: oauth-2025-04-20",
+        "-H", "User-Agent: claude-code/2.1.0",
+      ];
+    } else {
+      authArgs = ["-H", "Authorization: Bearer " + key];
+    }
     let handle;
     try {
       handle = subprocess.spawn({
@@ -559,7 +894,7 @@ export function apply(ctx) {
           c, "-sS",
           "--max-time", String(Math.floor(REQUEST_TIMEOUT_MS / 1000)),
           "-w", "\n%{http_code}",
-          "-H", authHeader,
+          ...authArgs,
           "-H", "Accept: application/json",
           url,
         ],
