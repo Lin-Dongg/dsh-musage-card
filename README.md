@@ -92,10 +92,12 @@
 - **Client（`dsh/client.js`）**：失败态卡片显示「🔑 需要 XX 登录 · 点击卡片自动获取」；
   登录中/刚成功过渡态文案；登录完成后自动刷新用量。点击分发与文案选择收在三个纯函数
   （`decideCardClick` / `canLoginAssistFor` / `loginNoteFor`），可直接单测。
-- **测试**：`node --test`（全量自动发现，78 用例）——新增 login-assist 30 用例
+- **测试**：`node --test`（全量自动发现，82 用例）——新增 login-assist 30 用例
   （纯函数：cookie 拼接/提取、marker 判定、浏览器探测、请求解析）、cdp-integration
-  2 用例（真实 headless Edge 全链路：读 HttpOnly cookie 与 Browser.close，
-  无浏览器自动 skip）、client-login 12 用例（交互决策）。
+  2 用例（真实 headless 浏览器全链路：读 HttpOnly cookie 与 Browser.close）、
+  session-orchestration 4 用例（mock ctx + 真实浏览器驱动生产路由的会话编排：
+  start/取消/关窗/dispose 清理；含同 profile 二次会话回归）、client-login 12 用例
+  （交互决策）。浏览器类用例无浏览器时自动 skip。
 
 ### v1.4.0（2026-10）新增 5 家 provider
 

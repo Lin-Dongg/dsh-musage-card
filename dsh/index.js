@@ -32,7 +32,7 @@
 //   - `subprocess` 调 curl: DSH 部署里没有 fetch provider, 且 WebFetchProvider
 //     协议只支持 GET + url, 不能加 headers.
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -1452,6 +1452,10 @@ export function apply(ctx) {
       const subprocess = ctx.subprocess;
       if (!subprocess) throw new Error("subprocess service 不可用");
       // 1) 启动专用浏览器 (CDP 随机端口 + 专用持久 profile)
+      // 先清掉上一次会话残留的 DevToolsActivePort —— 同一 profile 二次会话时,
+      // readDevToolsPort 会读到旧端口（已无监听）导致 CDP fetch 直接失败
+      // （实机复现于 login-assist 编排演练: 第二会话 "fetch failed"）。
+      try { unlinkSync(join(sess.profileDir, "DevToolsActivePort")); } catch (e) { /* 不存在即成功 */ }
       let handle;
       try {
         handle = subprocess.spawn({
