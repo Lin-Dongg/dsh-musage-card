@@ -375,6 +375,12 @@ window.__ModuleLoader__.load({
 
       // ---- 订阅活跃会话的 model directory, 提取 active provider ----
       const [provider, setProvider] = React.useState(null);
+      // 诊断用：sidebar 实际报出的 provider route（映射前的原值）。
+      // 失败时直接写进卡片文案 —— 省得每次都开 DevTools 捞日志。
+      const [rawProvider, setRawProvider] = React.useState(null);
+      const diag = !sessionId
+        ? "无活跃会话"
+        : (rawProvider ? ("provider=" + rawProvider) : "目录里没有 provider 字段");
       React.useEffect(() => {
         if (!models || !sessionId) {
           console.log("[musage-client] skip: no models or no sessionId. models=" + !!models + " sessionId=" + sessionId + " → no fallback (没订阅到 provider)");
@@ -398,8 +404,10 @@ window.__ModuleLoader__.load({
         const updateProvider = () => {
           try {
             const snap = directory.store.getSnapshot();
+            const raw = (snap && snap.current && snap.current.provider) || null;
             const p = readActiveProvider(snap);
-            console.log("[musage-client] model 变化: current.provider=" + (snap && snap.current && snap.current.provider) + " → mapped=" + p);
+            console.log("[musage-client] model 变化: current.provider=" + raw + " → mapped=" + p);
+            setRawProvider(raw);
             setProvider(p);  // 不 fallback minimax, 拿不到就 null → 显示 "musage"
           } catch (e) {
             console.error("[musage-client] readActiveProvider 抛异常: " + ((e && e.stack) || e));
@@ -419,7 +427,7 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         if (!provider) {
-          setState({ ok: false, loaded: true, kind: "other", message: "未选中支持的 provider", display: null });
+          setState({ ok: false, loaded: true, kind: "other", message: "未选中支持的 provider（" + diag + "）", display: null });
           return;
         }
         let alive = true;
@@ -505,8 +513,8 @@ window.__ModuleLoader__.load({
         children.push(React.createElement("div", {
           key: "note",
           className: "dsh-musage-card__note",
-          title: "dsh-musage · 当前模型未在 musage 支持列表内",
-        }, "未选中支持的 provider"));
+          title: "dsh-musage · 当前模型未在 musage 支持列表内 · " + diag,
+        }, "未选中支持的 provider（" + diag + "）"));
       } else if (!state.ok) {
         // 拉取失败
         children.push(React.createElement("div", {
