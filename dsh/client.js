@@ -82,6 +82,10 @@ window.__ModuleLoader__.load({
       "xiaomi-mimo": "xiaomi",
       "mimo": "xiaomi",
       "mimo-api": "xiaomi",
+      // DSH pi-ai 内置小米三区（token-plan-ams / cn / sgp）—— 2026-10 修复
+      "xiaomi-token-plan-ams": "xiaomi",
+      "xiaomi-token-plan-cn": "xiaomi",
+      "xiaomi-token-plan-sgp": "xiaomi",
       "claude": "claude",
       "anthropic": "claude",
       "claude-official": "claude",
@@ -702,6 +706,8 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply;
     exports.inject = ["slots", "timer", "modelDirectories"];
+    /** 测试出口（node:test 直测 route→provider 映射；不参与 cordis 装配）。 */
+    exports.__test = { readActiveProvider, PROVIDER_ALIASES };
     return module.exports;
   },
 });

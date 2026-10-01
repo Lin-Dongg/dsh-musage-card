@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { __parsers as P } from "../dsh/index.js";
+import { __parsers as P, __providers } from "../dsh/index.js";
 
 // ───────────────────────── SiliconFlow ─────────────────────────
 
@@ -185,4 +185,20 @@ test("regression: deepseek 余额解析保持", () => {
   const r = P.deepseek({ is_available: true, balance_infos: [{ currency: "CNY", total_balance: "43.97" }] });
   assert.equal(r.ok, true);
   assert.equal(r.display.balanceText, "¥43.97");
+});
+
+// ───────────────────────── Xiaomi refs / 鉴权分派（2026-10 修复） ─────────────────────────
+
+test("xiaomi: refs 覆盖 DSH 内置三区 Token Plan key（Bearer）+ cookie 兜底", () => {
+  const refs = __providers.xiaomi.refs;
+  assert.ok(refs.includes("XIAOMI_TOKEN_PLAN_AMS_API_KEY"), "缺 AMS key ref");
+  assert.ok(refs.includes("XIAOMI_TOKEN_PLAN_CN_API_KEY"), "缺 CN key ref");
+  assert.ok(refs.includes("XIAOMI_TOKEN_PLAN_SGP_API_KEY"), "缺 SGP key ref");
+  assert.ok(refs.includes("XIAOMI_MIMO_COOKIE"), "缺 cookie ref");
+});
+
+test("xiaomi: authStyleByRef 按 ref 分派——key 走 bearer, cookie 走 cookie", () => {
+  const m = __providers.xiaomi.authStyleByRef || {};
+  assert.equal(m["XIAOMI_MIMO_COOKIE"], "cookie");
+  assert.equal(m["XIAOMI_TOKEN_PLAN_AMS_API_KEY"], "bearer");
 });

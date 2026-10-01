@@ -1,6 +1,6 @@
 {
   "name": "dsh-musage-card",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Local fork of dsh-musage: multi-provider quota & balance glass card for the DSH sidebar footer (above the mobile-access button). 11 providers (MiniMax/DeepSeek/Kimi/Zhipu/OpenRouter/StepFun/SiliconFlow/Tavily/ZenMux/Xiaomi MiMo/Claude). Remaining-percentage countdown bars; tracks the selected model; credentials reused from DSH. Not published to any registry - installed via file: so the plugin market can never overwrite it.",
   "type": "module",
   "license": "MIT",

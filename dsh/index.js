@@ -131,17 +131,42 @@ const PROVIDERS = {
     parse: parseZenmuxResponse,
   },
   xiaomi: {
-    // MiMo 用量走 dashboard admin API, 凭据是"整段 Cookie header 值"(非 Bearer).
-    // refs 候选: 专有 cookie ref 优先; XIAOMI_API_KEY 兼容"把 cookie 贴进 key 槽"的用户.
-    refs: ["XIAOMI_MIMO_COOKIE", "XIAOMI_COOKIE", "MIMO_COOKIE", "XIAOMI_API_KEY"],
+    // MiMo 用量走 dashboard API (platform.xiaomimimo.com/api/v1/tokenPlan/usage)。
+    // 鉴权双形态（对齐 Musage xiaomi.rs 的 ApiKeyOrCookie; Bearer 优先, Cookie 兜底）：
+    //   - DSH pi-ai 内置三区 Token Plan API key（xiaomi-token-plan-{ams,cn,sgp}）
+    //     → Authorization: Bearer <key>
+    //   - 浏览器 dashboard 登录态 → Cookie: <整段 Cookie header 值>
+    // refs 顺序 = 探测顺序（key 先、cookie 兜底）。
+    refs: [
+      "XIAOMI_TOKEN_PLAN_AMS_API_KEY",
+      "XIAOMI_TOKEN_PLAN_CN_API_KEY",
+      "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
+      "XIAOMI_API_KEY",
+      "XIAOMI_MIMO_COOKIE",
+      "XIAOMI_COOKIE",
+      "MIMO_COOKIE",
+    ],
     urls: {
-      XIAOMI_MIMO_COOKIE: "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
-      XIAOMI_COOKIE:      "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
-      MIMO_COOKIE:        "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
-      XIAOMI_API_KEY:     "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+      XIAOMI_TOKEN_PLAN_AMS_API_KEY: "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+      XIAOMI_TOKEN_PLAN_CN_API_KEY:  "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+      XIAOMI_TOKEN_PLAN_SGP_API_KEY: "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+      XIAOMI_API_KEY:                "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+      XIAOMI_MIMO_COOKIE:            "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+      XIAOMI_COOKIE:                 "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
+      MIMO_COOKIE:                   "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage",
     },
     parse: parseXiaomiResponse,
-    authStyle: "cookie",
+    // 按命中的 ref 分派鉴权形态（curlFetch 的 authStyle）；未列出的 ref 用 authStyle 兜底。
+    authStyleByRef: {
+      XIAOMI_TOKEN_PLAN_AMS_API_KEY: "bearer",
+      XIAOMI_TOKEN_PLAN_CN_API_KEY:  "bearer",
+      XIAOMI_TOKEN_PLAN_SGP_API_KEY: "bearer",
+      XIAOMI_API_KEY:                "bearer",
+      XIAOMI_MIMO_COOKIE:            "cookie",
+      XIAOMI_COOKIE:                 "cookie",
+      MIMO_COOKIE:                   "cookie",
+    },
+    authStyle: "bearer",
   },
   claude: {
     // Claude 官方 OAuth 用量 (Claude Pro / Max 订阅): 凭据是 claude.ai 的 sessionKey cookie.
@@ -805,6 +830,9 @@ function isTrustedRequest(req) {
   }
 }
 
+/** PROVIDERS 表测试出口（node:test 断言 refs / 鉴权分派；不参与 cordis 装配）。 */
+export const __providers = PROVIDERS;
+
 /** 纯解析函数测试出口（node:test 直接调用；不参与 cordis 装配）。 */
 export const __parsers = {
   minimax: parseMinimaxResponse,
@@ -963,9 +991,11 @@ export function apply(ctx) {
       };
     }
     const url = cfg.urls[ref] || cfg.urls[cfg.refs[0]];
+    // 鉴权形态按命中的 ref 分派（authStyleByRef）；未列出时用 authStyle 兜底。
+    const style = (cfg.authStyleByRef && cfg.authStyleByRef[ref]) || cfg.authStyle;
     let raw;
     try {
-      raw = await curlFetch(url, key, cfg.authStyle);
+      raw = await curlFetch(url, key, style);
       if (!raw.ok) return raw;
     } catch (e) {
       return { ok: false, kind: "network", message: "fetch 异常: " + ((e && e.message) || String(e)) };
