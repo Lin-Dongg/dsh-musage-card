@@ -4,6 +4,11 @@
   "description": "Multi-provider quota & balance glass card for the DSH sidebar footer (11 providers incl. StepFun / Xiaomi MiMo / Claude with one-click browser login; Step Plan credit). Installable from the dsh-plugin marketplace (GitHub topic \"dsh-plugin\") or via file: linking.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Lin-Dongg/dsh-musage-card.git"
+  },
+  "homepage": "https://github.com/Lin-Dongg/dsh-musage-card#readme",
   "keywords": [
     "dsh",
     "dsh-plugin",
