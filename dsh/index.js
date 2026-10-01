@@ -210,7 +210,9 @@ const PROVIDERS = {
 const LOGIN_ASSIST = {
   xiaomi: {
     ref: "XIAOMI_MIMO_COOKIE",
-    loginUrl: "https://platform.xiaomimimo.com/",
+    // 直达控制台页: 未登录会自动跳转小米账号 SSO 登录页（2026-10-01 实机验证）。
+    // 不要用根域 —— 根域是营销页, 用户找不到登录入口。
+    loginUrl: "https://platform.xiaomimimo.com/console/balance",
     siteUrl: "https://platform.xiaomimimo.com/",
     markerCookies: ["api-platform_serviceToken"],
     extract: "all",
