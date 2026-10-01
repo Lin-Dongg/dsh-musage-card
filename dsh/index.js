@@ -32,6 +32,10 @@
 //   - `subprocess` 调 curl: DSH 部署里没有 fetch provider, 且 WebFetchProvider
 //     协议只支持 GET + url, 不能加 headers.
 
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 const POLL_INTERVAL_MS = 60_000;
 const CACHE_TTL_MS = 30_000;
 const BACKOFF_BASE_MS = 5_000;
@@ -184,6 +188,39 @@ const PROVIDERS = {
     },
     parse: parseClaudeResponse,
     authStyle: "claude",
+  },
+};
+
+// ============================================================
+// 登录助手注册表 (login-assist)
+// ============================================================
+// 需要浏览器登录态 (cookie 型凭据) 的 provider 的自动登录支持:
+//   点击卡片(失败态) → 宿主弹专用浏览器到官方登录页 → 用户在真实页面登录
+//   → 宿主经 DevTools 协议读 cookie (含 HttpOnly) → 试调用量 API 自证
+//   → credentials.set 写入 → 关窗。
+// 仅这两家; 其余 9 家是 API key 型 (复用 DSH 模型设置), 无登录痛点。
+//
+// 字段:
+//   - ref:           写入的 credentials ref (必须在 PROVIDERS[p].refs 内)
+//   - loginUrl:      浏览器窗口打开的登录页
+//   - siteUrl:       CDP Network.getCookies 的 urls 参数 (读该 URL 可见的 cookie)
+//   - markerCookies: 登录成功的标志 cookie 名 (出现且值非空才进入 API 试调)
+//   - extract:       "all" = 全量拼接为完整 Cookie header;
+//                    "name:<cookie名>" = 只取该 cookie 的值
+const LOGIN_ASSIST = {
+  xiaomi: {
+    ref: "XIAOMI_MIMO_COOKIE",
+    loginUrl: "https://platform.xiaomimimo.com/",
+    siteUrl: "https://platform.xiaomimimo.com/",
+    markerCookies: ["api-platform_serviceToken"],
+    extract: "all",
+  },
+  claude: {
+    ref: "CLAUDE_SESSION_KEY",
+    loginUrl: "https://claude.ai/login",
+    siteUrl: "https://claude.ai/",
+    markerCookies: ["sessionKey"],
+    extract: "name:sessionKey",
   },
 };
 
@@ -850,6 +887,237 @@ function isTrustedRequest(req) {
   }
 }
 
+// ============================================================
+// 登录助手: 纯函数层
+// ============================================================
+// 本层只做无 IO 的数据变换 (cookie 拼接/提取/标志判定/浏览器候选/状态快照),
+// 供单测直测 (tests/login-assist.test.mjs); IO 与流程在 CDP 客户端与会话层。
+
+/** 拼 CDP Network.getCookies 的 cookie 数组为完整 Cookie header 值。
+ *  跳过 name 空/非字符串与 value 非字符串的条目; 空串值保留 (k=)。 */
+function joinCookieHeader(cookies) {
+  if (!Array.isArray(cookies) || cookies.length === 0) return null;
+  const parts = [];
+  for (const c of cookies) {
+    if (!c || typeof c.name !== "string" || c.name.length === 0) continue;
+    if (typeof c.value !== "string") continue;
+    parts.push(c.name + "=" + c.value);
+  }
+  return parts.length > 0 ? parts.join("; ") : null;
+}
+
+/** 按 LOGIN_ASSIST[provider].extract 规则提取要写入 ref 的值。 */
+function extractLoginCookie(provider, cookies) {
+  const cfg = LOGIN_ASSIST[provider];
+  if (!cfg) return null;
+  if (cfg.extract === "all") return joinCookieHeader(cookies);
+  if (typeof cfg.extract === "string" && cfg.extract.indexOf("name:") === 0) {
+    const want = cfg.extract.slice("name:".length);
+    if (!Array.isArray(cookies)) return null;
+    for (const c of cookies) {
+      if (c && c.name === want && typeof c.value === "string" && c.value.length > 0) {
+        return c.value;
+      }
+    }
+    return null;
+  }
+  return null;
+}
+
+/** 登录标志 cookie 是否已出现 (值非空才算)。 */
+function hasLoginMarker(provider, cookies) {
+  const cfg = LOGIN_ASSIST[provider];
+  if (!cfg || !Array.isArray(cookies)) return false;
+  for (const c of cookies) {
+    if (!c || typeof c.value !== "string" || c.value.length === 0) continue;
+    if (cfg.markerCookies.indexOf(c.name) >= 0) return true;
+  }
+  return false;
+}
+
+/** Windows 浏览器可执行候选路径 (按优先级)。 */
+function browserCandidates(env) {
+  const list = [
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  ];
+  const localAppData = env && env.LOCALAPPDATA;
+  if (typeof localAppData === "string" && localAppData.length > 0) {
+    list.push(localAppData + "\\Google\\Chrome\\Application\\chrome.exe");
+  }
+  return list;
+}
+
+/** 过滤出实际存在的浏览器可执行文件 (保优先级顺序)。非 win32 → 空。 */
+function pickBrowserCandidates(platform, exists, env) {
+  if (platform !== "win32") return [];
+  const existsFn = typeof exists === "function"
+    ? exists
+    : function (p) { try { return existsSync(p); } catch (e) { return false; } };
+  return browserCandidates(env || {}).filter(function (p) {
+    try { return !!existsFn(p); } catch (e) { return false; }
+  });
+}
+
+/** 进行中 (active) 的会话状态; 其余为终结态。 */
+const LOGIN_ACTIVE_STATES = ["starting", "waiting"];
+
+/** 把内部登录会话对象映射为对外状态快照 (不泄露 ws/pid/profileDir 等内部字段)。 */
+function loginStatusSnapshot(session) {
+  if (!session) return { active: false, state: "idle" };
+  return {
+    active: LOGIN_ACTIVE_STATES.indexOf(session.state) >= 0,
+    state: session.state,
+    provider: session.provider || null,
+    message: session.message || null,
+    startedAt: session.startedAt || null,
+  };
+}
+
+// ============================================================
+// 登录助手: CDP 客户端 (DevTools 协议最小封装)
+// ============================================================
+// 只做四件事: 等浏览器写出的 DevToolsActivePort、列 targets、一问一答式
+// ws 调用 (Network.getCookies)、Browser.close。不订阅 CDP 事件。
+// 依赖运行时的全局 WebSocket 与 fetch (Electron 44 / Node >= 22 内置);
+// 缺失时由 startLoginSession 自检拒绝, 不在这里兜底。
+
+function sleepMs(ms) {
+  return new Promise(function (r) { setTimeout(r, ms); });
+}
+
+/** 轮询 DevToolsActivePort 文件 (浏览器写入 "<port>\n<browser-ws-path>"), 返回端口。 */
+async function readDevToolsPort(profileDir, timeoutMs) {
+  const file = join(profileDir, "DevToolsActivePort");
+  const deadline = nowMs() + timeoutMs;
+  for (;;) {
+    try {
+      const text = readFileSync(file, "utf8");
+      const port = parseInt(String(text).split(/\r?\n/)[0], 10);
+      if (port > 0) return port;
+    } catch (e) { /* 文件还没出现 */ }
+    if (nowMs() > deadline) throw new Error("等待 DevToolsActivePort 超时（浏览器未就绪）");
+    await sleepMs(250);
+  }
+}
+
+/** 连接一个 CDP WebSocket, 等 open。 */
+function cdpOpenWs(url, timeoutMs) {
+  return new Promise(function (resolve, reject) {
+    let ws;
+    try { ws = new WebSocket(url); } catch (e) { reject(e); return; }
+    const timer = setTimeout(function () {
+      try { ws.close(); } catch (e) {}
+      reject(new Error("CDP ws 连接超时"));
+    }, timeoutMs);
+    ws.onopen = function () { clearTimeout(timer); resolve(ws); };
+    ws.onerror = function () { clearTimeout(timer); reject(new Error("CDP ws 连接失败")); };
+  });
+}
+
+/** 把已 open 的 ws 包成一问一答会话 (id 匹配; 不处理 CDP 事件)。 */
+function cdpSession(ws) {
+  let seq = 0;
+  const pending = new Map();
+  ws.onmessage = function (ev) {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    if (msg && msg.id && pending.has(msg.id)) {
+      const slot = pending.get(msg.id);
+      pending.delete(msg.id);
+      clearTimeout(slot.timer);
+      if (msg.error) reject2(slot.reject, new Error("CDP " + (msg.error.message || JSON.stringify(msg.error))));
+      else slot.resolve(msg.result);
+    }
+  };
+  function reject2(rej, err) { rej(err); }
+  return {
+    call: function (method, params, timeoutMs) {
+      return new Promise(function (resolve, reject) {
+        const id = ++seq;
+        const timer = setTimeout(function () {
+          pending.delete(id);
+          reject(new Error("CDP 调用超时: " + method));
+        }, timeoutMs || 10000);
+        pending.set(id, { resolve: resolve, reject: reject, timer: timer });
+        ws.send(JSON.stringify({ id: id, method: method, params: params || {} }));
+      });
+    },
+    close: function () { try { ws.close(); } catch (e) {} },
+  };
+}
+
+/** HTTP /json/list: 列出 targets。 */
+async function cdpListTargets(port) {
+  const res = await fetch("http://127.0.0.1:" + port + "/json/list");
+  if (!res.ok) throw new Error("CDP /json/list HTTP " + res.status);
+  return res.json();
+}
+
+/** HTTP /json/version: 取 browser 级 ws url (Browser.close 用)。 */
+async function cdpBrowserWsUrl(port) {
+  const res = await fetch("http://127.0.0.1:" + port + "/json/version");
+  if (!res.ok) throw new Error("CDP /json/version HTTP " + res.status);
+  const json = await res.json();
+  return (json && json.webSocketDebuggerUrl) || null;
+}
+
+/** 从 target 列表挑第一个 page 的 ws url。 */
+function pickPageWsUrl(targets) {
+  if (!Array.isArray(targets)) return null;
+  for (const t of targets) {
+    if (t && t.type === "page" && t.webSocketDebuggerUrl) return t.webSocketDebuggerUrl;
+  }
+  return null;
+}
+
+/** CDP 读 cookie (含 HttpOnly —— 普通页面脚本拿不到的那部分)。 */
+async function cdpGetCookies(sess, urls) {
+  const result = await sess.call("Network.getCookies", { urls: urls });
+  return (result && Array.isArray(result.cookies)) ? result.cookies : [];
+}
+
+/** 解析登录路由输入 (method/action/provider 归一), 返回 { ok, op }。 */
+function parseLoginRequest(input) {
+  const method = String((input && input.method) || "GET").toUpperCase();
+  if (method === "GET") return { ok: true, op: "status" };
+  if (method !== "POST") return { ok: false, message: "method not allowed" };
+  const action = String((input && input.action) || "start").toLowerCase();
+  if (action === "cancel") return { ok: true, op: "cancel" };
+  if (action === "start") {
+    const provider = String((input && input.provider) || "");
+    if (!provider) return { ok: false, message: "缺少 provider 参数" };
+    if (!LOGIN_ASSIST[provider]) return { ok: false, message: "该 provider 不支持自动登录: " + provider };
+    return { ok: true, op: "start", provider: provider };
+  }
+  return { ok: false, message: "未知 action: " + action };
+}
+
+/** 读取请求 body 并 JSON.parse (限长; 空 body → null)。 */
+function readJsonBody(req, maxBytes) {
+  return new Promise(function (resolve, reject) {
+    let size = 0;
+    const chunks = [];
+    req.on("data", function (c) {
+      size += c.length;
+      if (size > (maxBytes || 64 * 1024)) {
+        reject(new Error("body too large"));
+        try { req.destroy(); } catch (e) {}
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", function () {
+      if (chunks.length === 0) { resolve(null); return; }
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
+      catch (e) { reject(e); }
+    });
+    req.on("error", function (e) { reject(e); });
+  });
+}
+
 /** PROVIDERS 表测试出口（node:test 断言 refs / 鉴权分派；不参与 cordis 装配）。 */
 export const __providers = PROVIDERS;
 
@@ -866,6 +1134,30 @@ export const __parsers = {
   zenmux: parseZenmuxResponse,
   xiaomi: parseXiaomiResponse,
   claude: parseClaudeResponse,
+};
+
+/** 登录助手纯函数测试出口（node:test 直接调用；不参与 cordis 装配）。 */
+export const __login = {
+  LOGIN_ASSIST,
+  joinCookieHeader,
+  extractLoginCookie,
+  hasLoginMarker,
+  pickBrowserCandidates,
+  browserCandidates,
+  loginStatusSnapshot,
+  parseLoginRequest,
+  readJsonBody,
+  // CDP 客户端（cdp-integration.test.mjs 用真实 headless 浏览器直测；
+  // 生产编排在 apply() 内的登录会话里）。
+  cdp: {
+    readDevToolsPort,
+    cdpOpenWs,
+    cdpSession,
+    cdpListTargets,
+    cdpBrowserWsUrl,
+    pickPageWsUrl,
+    cdpGetCookies,
+  },
 };
 
 export function apply(ctx) {
@@ -1060,7 +1352,7 @@ export function apply(ctx) {
   async function getQuota(provider) {
     const c = cache[provider];
     if (c && c.expiresAt > nowMs()) return c.value;
-    const result = await fetchProviderQuota(provider);
+    const result = withLoginAssist(provider, await fetchProviderQuota(provider));
     if (result.ok) {
       cache[provider] = { value: result, expiresAt: nowMs() + CACHE_TTL_MS, streak: 0 };
     } else {
@@ -1070,6 +1362,260 @@ export function apply(ctx) {
       cache[provider] = { value: result, expiresAt: nowMs() + backoffMs, streak: nextStreak };
     }
     return result;
+  }
+
+  // ============================================================
+  // 登录助手: 会话编排 (单例)
+  // ============================================================
+  // 流程: 点卡片(失败态) → start → spawn 专用浏览器(CDP 随机端口 + 专用
+  //   profile) → 用户在真实登录页登录 → 轮询 Network.getCookies（含 HttpOnly）
+  //   → 试调用量 API 自证 → credentials.set 写入 → 优雅关窗。
+  // 状态机: starting → waiting → success | failed | cancelled | timeout。
+  // 同一时刻至多一个会话; 终结态快照保留到下一次 start 覆盖。
+
+  const LOGIN_POLL_MS = 2_000;           // cookie 轮询间隔
+  const LOGIN_PROBE_MIN_MS = 3_000;      // API 试调最小间隔 (marker 出现后)
+  const LOGIN_READY_TIMEOUT_MS = 30_000; // 等 DevToolsActivePort 的上限
+  const LOGIN_MAX_MS = 30 * 60 * 1000;   // 单次会话硬上限
+
+  let loginSession = null;
+
+  function loginAssistInfo(provider) {
+    const cfg = LOGIN_ASSIST[provider];
+    if (!cfg) return { supported: false };
+    return { supported: true, ref: cfg.ref };
+  }
+
+  /** 失败结果附登录助手信息（client 据此在卡片上给出「点击登录」入口）。 */
+  function withLoginAssist(provider, result) {
+    if (result && !result.ok) {
+      const info = loginAssistInfo(provider);
+      if (info.supported) result.loginAssist = { supported: true, ref: info.ref };
+    }
+    return result;
+  }
+
+  function finishLoginSession(sess, state, message) {
+    if (sess !== loginSession) return;
+    sess.state = state;
+    sess.message = message || null;
+    sess.finishedAt = nowMs();
+    // 释放重引用（ws/handle 已关闭或即将关闭；快照继续可供 status 查询）
+    sess.sess = null;
+    sess.handle = null;
+  }
+
+  /** 尽量优雅地关闭会话的浏览器: CDP Browser.close → terminate 兜底。 */
+  async function closeBrowserForSession(sess) {
+    const handle = sess && sess.handle;
+    const browserWsUrl = sess && sess.browserWsUrl;
+    if (sess && sess.sess) { try { sess.sess.close(); } catch (e) {} sess.sess = null; }
+    if (browserWsUrl && typeof WebSocket === "function") {
+      try {
+        const ws = await cdpOpenWs(browserWsUrl, 3000);
+        ws.send(JSON.stringify({ id: 1, method: "Browser.close", params: {} }));
+        await sleepMs(800);
+        try { ws.close(); } catch (e) { /* 浏览器已在退出 */ }
+      } catch (e) { /* 落回 terminate */ }
+    }
+    if (handle) {
+      try {
+        const p = handle.terminate();
+        if (p && typeof p.catch === "function") p.catch(function () {});
+      } catch (e) {}
+      try { await Promise.race([handle.waitForExit(), sleepMs(5000)]); } catch (e) {}
+    }
+  }
+
+  /** 用临时 cookie 值试调用量 API（复用 curlFetch + parser；不写任何缓存）。 */
+  async function probeLoginValue(provider, value) {
+    const cfg = PROVIDERS[provider];
+    const la = LOGIN_ASSIST[provider];
+    if (!cfg || !la) return { ok: false, message: "未知 provider" };
+    const url = cfg.urls[la.ref] || cfg.urls[cfg.refs[0]];
+    const style = (cfg.authStyleByRef && cfg.authStyleByRef[la.ref]) || cfg.authStyle;
+    let raw;
+    try {
+      raw = await curlFetch(url, value, style);
+    } catch (e) {
+      return { ok: false, message: "试调异常: " + ((e && e.message) || String(e)) };
+    }
+    if (!raw.ok) return { ok: false, message: raw.message, httpStatus: raw.httpStatus || 0 };
+    const parsed = cfg.parse(raw.body);
+    if (!parsed.ok) return { ok: false, message: parsed.message || "解析失败" };
+    return { ok: true };
+  }
+
+  /** 登录会话主流程（异步推进；错误收敛到 failed 终态）。 */
+  async function runLoginSession(sess, cfg) {
+    try {
+      const subprocess = ctx.subprocess;
+      if (!subprocess) throw new Error("subprocess service 不可用");
+      // 1) 启动专用浏览器 (CDP 随机端口 + 专用持久 profile)
+      let handle;
+      try {
+        handle = subprocess.spawn({
+          argv: [
+            sess.exe,
+            "--remote-debugging-port=0",
+            "--user-data-dir=" + sess.profileDir,
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--window-size=520,760",
+            cfg.loginUrl,
+          ],
+          cwd: sess.profileDir,
+          stdio: { stdin: "ignore", stdout: "ignore", stderr: { maxBytes: 64 * 1024 } },
+          graceMs: 5000,
+        });
+      } catch (e) {
+        throw new Error("浏览器启动失败: " + ((e && e.message) || String(e)));
+      }
+      sess.handle = handle;
+      handle.done.then(
+        function () { sess.exited = true; },
+        function () { sess.exited = true; }
+      );
+      // 2) 等调试端口 → 找页面 target 的 ws
+      const port = await readDevToolsPort(sess.profileDir, LOGIN_READY_TIMEOUT_MS);
+      sess.port = port;
+      const targets = await cdpListTargets(port);
+      const pageWsUrl = pickPageWsUrl(targets);
+      if (!pageWsUrl) throw new Error("未找到页面调试目标（远程调试可能被策略禁用）");
+      sess.browserWsUrl = await cdpBrowserWsUrl(port).catch(function () { return null; });
+      if (sess.state !== "starting") return; // 期间被取消
+      // 3) 连接 + 进入等待
+      const ws = await cdpOpenWs(pageWsUrl, 10000);
+      sess.sess = cdpSession(ws);
+      if (sess.state !== "starting") return;
+      sess.state = "waiting";
+      sess.message = "已打开浏览器，请在页面中完成登录…";
+      // 4) 轮询: marker → 试调 API → 写凭据 → 关窗
+      while (sess.state === "waiting") {
+        if (sess.exited) {
+          finishLoginSession(sess, "cancelled", "浏览器已关闭（登录未完成）");
+          return;
+        }
+        if (nowMs() - sess.startedAt > LOGIN_MAX_MS) {
+          await closeBrowserForSession(sess);
+          finishLoginSession(sess, "timeout", "登录超时（30 分钟），已关闭浏览器窗口");
+          return;
+        }
+        let cookies = [];
+        try {
+          cookies = await cdpGetCookies(sess.sess, [cfg.siteUrl]);
+        } catch (e) {
+          if (sess.state !== "waiting") continue; // 被取消: 回顶部收敛
+          // ws 可能随页面导航断开: 尝试重连一次, 否则等下一轮
+          try {
+            const list = await cdpListTargets(sess.port);
+            const u = pickPageWsUrl(list);
+            if (u) {
+              const w2 = await cdpOpenWs(u, 5000);
+              if (sess.sess) { try { sess.sess.close(); } catch (e2) {} }
+              sess.sess = cdpSession(w2);
+            }
+          } catch (e2) { /* 浏览器退出过渡态: 下一轮 exited 收敛 */ }
+          await sleepMs(LOGIN_POLL_MS);
+          continue;
+        }
+        if (hasLoginMarker(sess.provider, cookies) && nowMs() - sess.lastProbeAt >= LOGIN_PROBE_MIN_MS) {
+          sess.lastProbeAt = nowMs();
+          sess.message = "已检测到登录凭证，正在验证…";
+          const value = extractLoginCookie(sess.provider, cookies);
+          if (value) {
+            const probe = await probeLoginValue(sess.provider, value);
+            if (probe.ok) {
+              if (sess.state !== "waiting") return; // 试调期间被取消: 不写入
+              try {
+                await ctx.credentials.set(cfg.ref, value);
+              } catch (e) {
+                await closeBrowserForSession(sess);
+                finishLoginSession(sess, "failed", "写入凭据失败: " + ((e && e.message) || String(e)));
+                return;
+              }
+              cache[sess.provider] = null; // 卡片下次拉取立刻取到真实用量
+              await closeBrowserForSession(sess);
+              finishLoginSession(sess, "success", "已登录，凭据已保存");
+              return;
+            }
+            sess.lastError = probe.message || null;
+            sess.message = "已检测到凭证但尚未生效，继续等待…";
+          }
+        }
+        await sleepMs(LOGIN_POLL_MS);
+      }
+    } catch (e) {
+      // 启动/连接阶段失败: 附浏览器 stderr 片段做诊断, 然后收敛
+      let diag = "";
+      try {
+        const h = sess.handle;
+        const stderr = h && h.collected && h.collected.stderr ? h.collected.stderr.readFrom(0) : null;
+        if (stderr && stderr.text) diag = "（浏览器输出: " + stderr.text.slice(0, 200).replace(/\s+/g, " ") + "）";
+      } catch (e2) {}
+      try { await closeBrowserForSession(sess); } catch (e2) {}
+      finishLoginSession(sess, "failed", ((e && e.message) || String(e)) + diag);
+    }
+  }
+
+  /** 启动登录会话（幂等: 已有进行中会话时原样返回其状态）。 */
+  function startLoginSession(provider) {
+    const cfg = LOGIN_ASSIST[provider];
+    if (!cfg) return { ok: false, message: "该 provider 不支持自动登录" };
+    if (loginSession && LOGIN_ACTIVE_STATES.indexOf(loginSession.state) >= 0) {
+      return { ok: true, message: "已有登录进行中", status: loginStatusSnapshot(loginSession) };
+    }
+    if (typeof WebSocket !== "function") {
+      return { ok: false, message: "当前环境不支持 WebSocket，无法自动登录（请按 README 手动配置 cookie）" };
+    }
+    if (typeof fetch !== "function") {
+      return { ok: false, message: "当前环境不支持 fetch，无法自动登录（请按 README 手动配置 cookie）" };
+    }
+    const candidates = pickBrowserCandidates(process.platform, undefined, process.env);
+    if (candidates.length === 0) {
+      return { ok: false, message: "未找到 Edge / Chrome（自动登录需要其中一个浏览器）" };
+    }
+    const exe = candidates[0];
+    const kind = /chrome\.exe$/i.test(exe) ? "chrome" : "edge";
+    const dshHome = (typeof process.env.DSH_HOME === "string" && process.env.DSH_HOME.length > 0)
+      ? process.env.DSH_HOME
+      : join(homedir(), ".dsh");
+    const profileDir = join(dshHome, "musage-login", kind);
+    try { mkdirSync(profileDir, { recursive: true }); } catch (e) {}
+    loginSession = {
+      provider: provider,
+      state: "starting",
+      message: "正在启动浏览器…",
+      startedAt: nowMs(),
+      finishedAt: null,
+      exe: exe,
+      profileDir: profileDir,
+      port: 0,
+      handle: null,
+      sess: null,
+      browserWsUrl: null,
+      lastProbeAt: 0,
+      lastError: null,
+      exited: false,
+    };
+    const sess = loginSession;
+    runLoginSession(sess, cfg).catch(function (e) {
+      // runLoginSession 内部已收敛错误; 这里兜底 promise 泄漏
+      try { finishLoginSession(sess, "failed", (e && e.message) || String(e)); } catch (e2) {}
+    });
+    return { ok: true, message: "已启动登录助手", status: loginStatusSnapshot(loginSession) };
+  }
+
+  /** 取消进行中的登录（关窗）。 */
+  async function cancelLoginSession() {
+    const sess = loginSession;
+    if (!sess || LOGIN_ACTIVE_STATES.indexOf(sess.state) < 0) {
+      return { ok: false, message: "没有进行中的登录" };
+    }
+    sess.state = "cancelled"; // 让轮询循环退出
+    await closeBrowserForSession(sess);
+    finishLoginSession(sess, "cancelled", "已取消登录");
+    return { ok: true, message: "已取消登录" };
   }
 
   // 后台轮询: 60s 拉一次每个已知 provider (预热缓存)
@@ -1127,6 +1673,74 @@ export function apply(ctx) {
           },
         });
         console.log("[musage] route GET /musage/quota registered");
+        // ---- 登录助手路由 ----
+        // GET  /musage/login/status → 当前登录会话快照（client 轮询）
+        // POST /musage/login        → action=start|cancel（query 或 JSON body）
+        scope.webServer.register({
+          name: "musage-login-status",
+          kind: "exact",
+          path: "/musage/login/status",
+          handler: async (req, res) => {
+            const send = (status, body) => {
+              res.writeHead(status, { "content-type": "application/json" });
+              res.end(JSON.stringify(body));
+            };
+            try {
+              if (!isTrustedRequest(req)) {
+                send(403, { ok: false, kind: "forbidden", message: "request refused: same-origin loopback only" });
+                return;
+              }
+              if (req.method !== "GET") {
+                send(405, { ok: false, message: "method not allowed" });
+                return;
+              }
+              send(200, { ok: true, login: loginStatusSnapshot(loginSession) });
+            } catch (e) {
+              send(200, { ok: false, message: String((e && e.message) || e) });
+            }
+          },
+        });
+        scope.webServer.register({
+          name: "musage-login",
+          kind: "exact",
+          path: "/musage/login",
+          handler: async (req, res) => {
+            const send = (status, body) => {
+              res.writeHead(status, { "content-type": "application/json" });
+              res.end(JSON.stringify(body));
+            };
+            try {
+              if (!isTrustedRequest(req)) {
+                send(403, { ok: false, kind: "forbidden", message: "request refused: same-origin loopback only" });
+                return;
+              }
+              if (req.method !== "POST") {
+                send(405, { ok: false, message: "method not allowed" });
+                return;
+              }
+              const params = new URL(req.url, "http://localhost").searchParams;
+              let body = null;
+              try { body = await readJsonBody(req); } catch (e) { body = null; }
+              const parsed = parseLoginRequest({
+                method: "POST",
+                action: (body && body.action) || params.get("action") || "start",
+                provider: (body && body.provider) || params.get("provider") || "",
+              });
+              if (!parsed.ok) {
+                send(400, { ok: false, message: parsed.message });
+                return;
+              }
+              if (parsed.op === "cancel") {
+                send(200, await cancelLoginSession());
+                return;
+              }
+              send(200, startLoginSession(parsed.provider));
+            } catch (e) {
+              send(200, { ok: false, message: String((e && e.message) || e) });
+            }
+          },
+        });
+        console.log("[musage] routes /musage/login + /musage/login/status registered");
       } catch (e) {
         console.error("[musage] quota 路由注册失败: " + ((e && e.stack) || e));
       }
@@ -1137,6 +1751,12 @@ export function apply(ctx) {
     return () => {
       try { disposeTimer(); } catch (e) {}
       for (const k of Object.keys(cache)) cache[k] = null;
+      // 插件卸载/重载: 终止仍在进行的登录会话（关窗）
+      if (loginSession && LOGIN_ACTIVE_STATES.indexOf(loginSession.state) >= 0) {
+        loginSession.state = "cancelled";
+        closeBrowserForSession(loginSession).catch(function () {});
+        finishLoginSession(loginSession, "cancelled", "会话已终止（插件重载）");
+      }
     };
   });
 }
