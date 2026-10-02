@@ -122,6 +122,17 @@ test("pickBrowserCandidates: 只命中 Edge → 只返回 Edge（优先级顺序
   assert.ok(r[1].includes("Program Files\\Microsoft"));
 });
 
+test("pickBrowserCandidates: 只命中 Chrome（Edge 已卸载）→ 返回 Chrome 候选", () => {
+  const r = L.pickBrowserCandidates(
+    "win32",
+    (p) => p.includes("Google\\Chrome"),
+    { LOCALAPPDATA: "C:\\Users\\x\\AppData\\Local" }
+  );
+  assert.equal(r.length, 3);
+  assert.ok(r[0].includes("Program Files\\Google\\Chrome"), "标准安装优先");
+  assert.ok(r[r.length - 1].includes("AppData\\Local"), "用户级安装兜底");
+});
+
 test("pickBrowserCandidates: 全部不存在 → []", () => {
   assert.deepEqual(L.pickBrowserCandidates("win32", () => false, {}), []);
 });
