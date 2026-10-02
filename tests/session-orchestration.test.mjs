@@ -74,6 +74,20 @@ const ctx = {
   },
 };
 
+// direct spawn 路径的测试降级: 注入 headless 包装的 node:child_process
+// （与 ctx.subprocess mock 同一目的——不弹窗; 仅对浏览器可执行插 --headless=new,
+//  窗口修复脚本等其它直 spawn 不受影响）。进程追踪复用 children 集合。
+host.__login.setNodeChildProcessForTests({
+  spawn: (exe, args, opts) => {
+    const a = Array.isArray(args) ? args.slice() : [];
+    if (hasBrowser && exe === browsers[0]) a.splice(0, 0, "--headless=new");
+    const child = spawn(exe, a, opts);
+    children.add(child);
+    child.on("exit", () => children.delete(child));
+    return child;
+  },
+});
+
 host.apply(ctx);
 
 // ---------- fake req/res（走生产 handler; isTrustedRequest 用 loopback host 通过） ----------

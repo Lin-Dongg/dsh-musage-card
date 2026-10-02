@@ -87,18 +87,24 @@
 ### v1.6.6（2026-10）Windows 登录窗口「完全不可见」根因修复
 
 - **根因（2026-10-02 实机全链定位）**：DSH 的 local subprocess 服务在 Windows 上经
-  Job runner 启动子进程，runner 对目标一律带 `windowsHide: true`
+  Job runner 架构启动子进程，runner 对目标一律带 `windowsHide: true`
   （`dsh-subprocess-local/lib/runner-launch`: `windowsHide: platform === "win32"`）——
   本意是隐藏控制台窗口，但 Windows 的启动显示状态继承让 GUI 子进程（Edge）的
   首个窗口以**隐藏状态**创建（实测 `IsWindowVisible=false`，恢复需 `ShowWindow(SW_SHOW)`）：
   窗口自出现起在屏幕上与任务栏中都不可见——CDP 仍可连接、页面正常渲染，
-  不是「白屏」也不是「被盖住」；`Page.bringToFront` 只能改焦点、不能恢复显示。
-  同机对照实验（同参数、唯一变量 `windowsHide`）：`true` → 窗口隐藏、`false` → 正常可见。
-- **修复**：登录会话建立 CDP 连接后，按 `--user-data-dir` 匹配 msedge 进程并检查其
-  窗口可见性；对隐藏窗口补一次 `ShowWindow(SW_SHOW)`（实测 `VISIBLE=false → true`
-  且稳定保持）；会话 15s 时单次复查（防「显示后再次隐藏」）。仅 Windows 生效、
-  失败静默（fail-open，不阻塞登录流程）。
-- 测试：`parseWindowVisibilityReport` 纯函数用例（报告解析 / 不完整输入不误判）。
+  不是「白屏」也不是「被盖住」；`Page.bringToFront` 只能改焦点、不能恢复显示；
+  经该 runner 链执行的 `ShowWindow` 实测也修不动（同机对照：直接 spawn 的
+  PowerShell 可修复且稳定保持）。
+- **修复**：登录浏览器改走**直接 spawn（`node:child_process`，显式 `windowsHide: false`）**
+  ——绕开 runner 链的隐藏继承，窗口从创建起正常显示（同机 A/B 实证：同参数、
+  唯一变量 `windowsHide` → `true` 隐藏 / `false` 可见）；环境不允许
+  `node:child_process` 时回退 `ctx.subprocess`，并保留一次 `ShowWindow(SW_SHOW)`
+  修复作为回退路径兜底（会话 15s 时单次复查；脚本输出含 `stuck` 统计——调用被
+  静默拒绝时可见）。修复过程写 `musage-window-fix.log`（profile 目录内）便于排查。
+  仅 Windows 涉及（`windowsHide` 为 Windows 平台语义），其余平台全链不变。
+- 测试：`parseWindowVisibilityReport` 纯函数用例（报告 / `stuck` 解析 / 旧格式兼容）；
+  session-orchestration 经 `__login.setNodeChildProcessForTests` 注入 headless 包装，
+  direct spawn 路径保持真实浏览器覆盖。
 
 ### v1.6.5（2026-10）DeepSeek Account 登录 provider 支持
 

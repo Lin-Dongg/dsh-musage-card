@@ -1103,6 +1103,24 @@ function parseWindowVisibilityReport(text) {
   };
 }
 
+/** node:child_process 的动态加载缓存（模块级: 测试经 __login.setNodeChildProcessForTests
+ *  注入 headless 包装——direct spawn 路径的测试降级需要）。undefined = 未尝试,
+ *  null = 不可用, object = 已加载。 */
+let nodeCpModule;
+
+/** 动态加载 node:child_process（不静态 import——环境若禁用, 插件整体仍应照常
+ *  装配; 加载失败 = null, 调用方回退 ctx.subprocess）。 */
+async function loadNodeChildProcess() {
+  if (nodeCpModule !== undefined) return nodeCpModule;
+  try {
+    const mod = await import("node:child_process");
+    nodeCpModule = (mod && typeof mod.spawn === "function") ? mod : null;
+  } catch (e) {
+    nodeCpModule = null;
+  }
+  return nodeCpModule;
+}
+
 /** Windows 浏览器可执行候选路径 (按优先级)。 */
 function browserCandidates(env) {
   const list = [
@@ -1335,6 +1353,8 @@ export const __login = {
   parseLoginRequest,
   readJsonBody,
   parseWindowVisibilityReport,
+  // direct spawn 路径的测试注入缝（headless 降级; 见 loadNodeChildProcess 注释）
+  setNodeChildProcessForTests: (mod) => { nodeCpModule = mod; },
   // CDP 客户端（cdp-integration.test.mjs 用真实 headless 浏览器直测；
   // 生产编排在 apply() 内的登录会话里）。
   cdp: {
@@ -1688,20 +1708,7 @@ export function apply(ctx) {
   // ShowWindow 实测修不动（同机对照: 直接 spawn 的 PowerShell 可修复且稳定
   // 保持）。因此登录浏览器与修复脚本都优先「直接 spawn」（显式给出 windowsHide）,
   // node:child_process 不可用时回退 ctx.subprocess（窗口修复尽力兜底）。
-
-  /** 动态加载 node:child_process（不静态 import——环境若禁用, 插件整体仍应
-   *  照常装配; 加载失败 = null, 调用方回退 ctx.subprocess）。 */
-  let nodeCpModule; // undefined = 未尝试, null = 不可用, object = 已加载
-  async function loadNodeChildProcess() {
-    if (nodeCpModule !== undefined) return nodeCpModule;
-    try {
-      const mod = await import("node:child_process");
-      nodeCpModule = (mod && typeof mod.spawn === "function") ? mod : null;
-    } catch (e) {
-      nodeCpModule = null;
-    }
-    return nodeCpModule;
-  }
+  // （加载器与测试注入缝在模块级: loadNodeChildProcess / __login.setNodeChildProcessForTests）
 
   /** 直接 spawn 一个短命令并收集输出（窗口修复脚本用; 控制台程序显式
    *  windowsHide: true 防闪控制台窗——SW_HIDE 继承只影响 GUI 子进程,
@@ -1941,8 +1948,10 @@ Write-Output ("total=" + $script:total + " hidden=" + $script:hidden + " shown="
       const report = parseWindowVisibilityReport(out);
       if (report) {
         sess.windowVisibility = report;
-        // 进程与窗口都已找到（无论是否需要修复）→ 收工; 否则等窗口创建后重试。
-        if (report.pids > 0 && report.total > 0) return report;
+        // 进程已就绪（CDP 连接后属必然）→ 收工: 有窗口说明该修的已修,
+        // 无窗口（headless/特殊环境）则没有可修对象, 重试无意义。
+        // pids=0（浏览器进程尚未出现）→ 留待下一次尝试。
+        if (report.pids > 0) return report;
       }
       await sleepMs(1500);
     }
