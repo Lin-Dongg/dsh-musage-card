@@ -1092,9 +1092,15 @@ function isAuthFailureMessage(message) {
  *  脚本未产出（环境不支持 / 尚未就绪）。纯函数, 单测直测。 */
 function parseWindowVisibilityReport(text) {
   if (typeof text !== "string") return null;
-  const m = /total=(\d+)\s+hidden=(\d+)\s+shown=(\d+)\s+pids=(\d+)/.exec(text);
+  const m = /total=(\d+)\s+hidden=(\d+)\s+shown=(\d+)\s+pids=(\d+)(?:\s+stuck=(\d+))?/.exec(text);
   if (!m) return null;
-  return { total: Number(m[1]), hidden: Number(m[2]), shown: Number(m[3]), pids: Number(m[4]) };
+  return {
+    total: Number(m[1]),
+    hidden: Number(m[2]),
+    shown: Number(m[3]),
+    pids: Number(m[4]),
+    stuck: m[5] === undefined ? 0 : Number(m[5]),   // 修复脚本 v2 起提供; 旧格式视为 0
+  };
 }
 
 /** Windows 浏览器可执行候选路径 (按优先级)。 */
@@ -1673,6 +1679,126 @@ export function apply(ctx) {
     }
   }
 
+  // ---- 直接子进程通道（node:child_process） --------------------------------
+  // 2026-10-02 实测根因: DSH 的 ctx.subprocess 在 Windows 上用 Job runner 架构,
+  // runner 对目标一律带 `windowsHide: true`（dsh-subprocess-local/lib/
+  // runner-launch: `windowsHide: platform === "win32"`）——本意是隐藏控制台,
+  // 但 Windows 的启动显示状态继承让 GUI 子进程（Edge）的首个窗口以隐藏状态
+  // 创建, 用户完全看不到; 且经该 runner 链 spawn 的 PowerShell 对窗口补
+  // ShowWindow 实测修不动（同机对照: 直接 spawn 的 PowerShell 可修复且稳定
+  // 保持）。因此登录浏览器与修复脚本都优先「直接 spawn」（显式给出 windowsHide）,
+  // node:child_process 不可用时回退 ctx.subprocess（窗口修复尽力兜底）。
+
+  /** 动态加载 node:child_process（不静态 import——环境若禁用, 插件整体仍应
+   *  照常装配; 加载失败 = null, 调用方回退 ctx.subprocess）。 */
+  let nodeCpModule; // undefined = 未尝试, null = 不可用, object = 已加载
+  async function loadNodeChildProcess() {
+    if (nodeCpModule !== undefined) return nodeCpModule;
+    try {
+      const mod = await import("node:child_process");
+      nodeCpModule = (mod && typeof mod.spawn === "function") ? mod : null;
+    } catch (e) {
+      nodeCpModule = null;
+    }
+    return nodeCpModule;
+  }
+
+  /** 直接 spawn 一个短命令并收集输出（窗口修复脚本用; 控制台程序显式
+   *  windowsHide: true 防闪控制台窗——SW_HIDE 继承只影响 GUI 子进程,
+   *  PowerShell 自身没有 GUI 窗口, 安全）。返回 null 表示通道不可用。 */
+  async function spawnCollectDirect(program, args, cwd) {
+    const mod = await loadNodeChildProcess();
+    if (!mod) return null;
+    const child = mod.spawn(program, args, {
+      cwd: cwd,
+      detached: false,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    let err = "";
+    try {
+      child.stdout.on("data", function (b) { out = (out + b.toString("utf8")).slice(-8192); });
+      child.stderr.on("data", function (b) { err = (err + b.toString("utf8")).slice(-8192); });
+    } catch (e) { /* 流不可用: 读空 */ }
+    const exit = new Promise(function (resolve) {
+      child.once("exit", function () { resolve(true); });
+      child.once("error", function () { resolve(false); });
+    });
+    return { exit: exit, out: function () { return out; }, err: function () { return err; } };
+  }
+
+  /** 启动登录浏览器。首选直接 spawn（windowsHide: false 显式给出）——窗口从
+   *  创建起可见（同机 A/B 实证: 唯一变量 windowsHide → 隐藏/可见）; 环境不允许
+   *  node:child_process 时回退 ctx.subprocess（该路径的窗口由
+   *  ensureLoginWindowVisible 尽力修复）。返回统一句柄 { kind, pid, terminate,
+   *  waitForExit, done, stderrText }。 */
+  async function spawnLoginBrowser(sess, cfg) {
+    const argv = [
+      "--remote-debugging-port=0",
+      "--user-data-dir=" + sess.profileDir,
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--window-size=520,760",
+      cfg.loginUrl,
+    ];
+    const mod = await loadNodeChildProcess();
+    if (mod) {
+      try {
+        const child = mod.spawn(sess.exe, argv, {
+          cwd: sess.profileDir,
+          detached: false,
+          windowsHide: false,   // ← 根因参数: 不加（=true）则该继承路径下窗口隐藏
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+        let stderrText = "";
+        try { child.stderr.on("data", function (b) { stderrText = (stderrText + b.toString("utf8")).slice(-4096); }); } catch (e) {}
+        const exit = new Promise(function (resolve) {
+          child.once("exit", function () { resolve(); });
+          child.once("error", function () { resolve(); });
+        });
+        return {
+          kind: "direct",
+          pid: child.pid || 0,
+          terminate: function () { try { child.kill(); } catch (e) {} return Promise.resolve(); },
+          waitForExit: function () { return exit; },
+          done: exit,
+          stderrText: function () { return stderrText; },
+        };
+      } catch (e) {
+        traceWindowFix(sess, "direct spawn 失败, 回退 ctx.subprocess: " + ((e && e.message) || String(e)));
+      }
+    }
+    const subprocess = ctx.subprocess;
+    if (!subprocess) throw new Error("subprocess service 不可用");
+    const handle = subprocess.spawn({
+      argv: [sess.exe].concat(argv),
+      cwd: sess.profileDir,
+      stdio: { stdin: "ignore", stdout: "ignore", stderr: { maxBytes: 64 * 1024 } },
+      graceMs: 5000,
+    });
+    return {
+      kind: "service",
+      pid: handle.pid || 0,
+      terminate: function () {
+        try {
+          const p = handle.terminate();
+          if (p && typeof p.catch === "function") p.catch(function () {});
+        } catch (e) {}
+        return Promise.resolve();
+      },
+      waitForExit: function () { return handle.waitForExit(); },
+      done: handle.done,
+      stderrText: function () {
+        try {
+          const c = handle.collected && handle.collected.stderr;
+          if (c) { const r = c.readFrom(0); return (r && r.text) || ""; }
+        } catch (e) {}
+        return "";
+      },
+    };
+  }
+
   /** Windows 登录窗口可见性修复（2026-10-02 实机根因）:
    *  DSH 的 local subprocess 服务在 Windows 上用 Job runner 启动子进程,
    *  runner 对目标一律带 `windowsHide: true`（dsh-subprocess-local/lib/
@@ -1708,6 +1834,7 @@ Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction SilentlyC
 $script:total = 0
 $script:hidden = 0
 $script:shown = 0
+$script:stuck = 0
 $cb2 = [MusageWinFix+EnumProc]{
   param($h, $l)
   $wp = 0
@@ -1720,20 +1847,67 @@ $cb2 = [MusageWinFix+EnumProc]{
       if (-not [MusageWinFix]::IsWindowVisible($h)) {
         $script:hidden++
         [void][MusageWinFix]::ShowWindow($h, 5)
-        $script:shown++
+        if ([MusageWinFix]::IsWindowVisible($h)) { $script:shown++ } else { $script:stuck++ }
       }
     }
   }
   return $true
 }
 [void][MusageWinFix]::EnumWindows($cb2, [IntPtr]::Zero)
-Write-Output ("total=" + $script:total + " hidden=" + $script:hidden + " shown=" + $script:shown + " pids=" + $edgePids.Count)`;
+Write-Output ("total=" + $script:total + " hidden=" + $script:hidden + " shown=" + $script:shown + " pids=" + $edgePids.Count + " stuck=" + $script:stuck)`;
 
   /** 窗口修复诊断 trace: 追加到 profile 目录下的 musage-window-fix.log。
    *  DSH console 落点随部署而异, 修复过程留一份落盘记录便于排查
    *  （resolve 到的 PowerShell 路径 / spawn 结果 / 脚本 stdout）。 */
   function traceWindowFix(sess, msg) {
     try { appendFileSync(join(sess.profileDir, "musage-window-fix.log"), new Date().toISOString() + " " + msg + "\n"); } catch (e) {}
+  }
+
+  /** 执行一次窗口修复脚本, 返回 stdout 文本（失败返回 null）。
+   *  优先直接 spawn（非 runner 链——2026-10-02 实测该链内的 ShowWindow
+   *  修不动窗口）; node:child_process 不可用时回退 ctx.subprocess。 */
+  async function runWindowFixScript(sess, psExe, scriptPath, attempt) {
+    const args = [
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy", "Bypass",
+      "-File", scriptPath,
+      "-UserDataDir", sess.profileDir,
+    ];
+    try {
+      const direct = await spawnCollectDirect(psExe, args, sess.profileDir);
+      if (direct) {
+        const finished = await Promise.race([
+          direct.exit.then(function () { return true; }, function () { return true; }),
+          sleepMs(10000).then(function () { return false; }),
+        ]);
+        const out = direct.out();
+        traceWindowFix(sess, "attempt=" + attempt + " direct exit=" + finished + " out=" + JSON.stringify(String(out).slice(0, 200)));
+        return out;
+      }
+    } catch (e) {
+      traceWindowFix(sess, "attempt=" + attempt + " direct 异常: " + ((e && e.message) || String(e)));
+    }
+    const subprocess = ctx.subprocess;
+    if (!subprocess) return null;
+    const handle = subprocess.spawn({
+      argv: [psExe].concat(args),
+      cwd: sess.profileDir,
+      stdio: { stdin: "ignore", stdout: { maxBytes: 32 * 1024 }, stderr: { maxBytes: 32 * 1024 } },
+      graceMs: 5000,
+    });
+    traceWindowFix(sess, "attempt=" + attempt + " service spawn pid=" + ((handle && handle.pid) || "?"));
+    const finished = await Promise.race([
+      handle.waitForExit().then(function () { return true; }, function () { return true; }),
+      sleepMs(10000).then(function () { return false; }),
+    ]);
+    let out = "";
+    try {
+      const c = handle.collected && handle.collected.stdout;
+      if (c) { const r = c.readFrom(0); out = (r && r.text) || ""; }
+    } catch (e) { /* 无输出 */ }
+    traceWindowFix(sess, "attempt=" + attempt + " service exit=" + finished + " out=" + JSON.stringify(String(out).slice(0, 200)));
+    return out;
   }
 
   /** 把登录窗口从 SW_HIDE 恢复显示（见 WINDOW_SHOW_PS 注释）。最多 3 次
@@ -1758,39 +1932,17 @@ Write-Output ("total=" + $script:total + " hidden=" + $script:hidden + " shown="
     const scriptPath = join(sess.profileDir, "musage-show-window.ps1");
     try { writeFileSync(scriptPath, WINDOW_SHOW_PS, "utf8"); } catch (e) { return null; }
     for (let attempt = 0; attempt < 3; attempt++) {
+      let out = null;
       try {
-        const handle = subprocess.spawn({
-          argv: [
-            psExe,
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy", "Bypass",
-            "-File", scriptPath,
-            "-UserDataDir", sess.profileDir,
-          ],
-          cwd: sess.profileDir,
-          stdio: { stdin: "ignore", stdout: { maxBytes: 32 * 1024 }, stderr: { maxBytes: 32 * 1024 } },
-          graceMs: 5000,
-        });
-        traceWindowFix(sess, "attempt=" + attempt + " spawn pid=" + ((handle && handle.pid) || "?"));
-        const finished = await Promise.race([
-          handle.waitForExit().then(function () { return true; }, function () { return true; }),
-          sleepMs(10000).then(function () { return false; }),
-        ]);
-        let out = "";
-        try {
-          const c = handle.collected && handle.collected.stdout;
-          if (c) { const r = c.readFrom(0); out = (r && r.text) || ""; }
-        } catch (e) { /* 无输出 */ }
-        traceWindowFix(sess, "attempt=" + attempt + " exit=" + finished + " stdout=" + JSON.stringify(String(out).slice(0, 160)));
-        const report = parseWindowVisibilityReport(out);
-        if (report) {
-          sess.windowVisibility = report;
-          // 进程与窗口都已找到（无论是否需要修复）→ 收工; 否则等窗口创建后重试。
-          if (report.pids > 0 && report.total > 0) return report;
-        }
+        out = await runWindowFixScript(sess, psExe, scriptPath, attempt);
       } catch (e) {
         traceWindowFix(sess, "attempt=" + attempt + " 异常: " + ((e && e.message) || String(e)));
+      }
+      const report = parseWindowVisibilityReport(out);
+      if (report) {
+        sess.windowVisibility = report;
+        // 进程与窗口都已找到（无论是否需要修复）→ 收工; 否则等窗口创建后重试。
+        if (report.pids > 0 && report.total > 0) return report;
       }
       await sleepMs(1500);
     }
@@ -1877,24 +2029,13 @@ Write-Output ("total=" + $script:total + " hidden=" + $script:hidden + " shown="
       try { unlinkSync(join(sess.profileDir, "DevToolsActivePort")); } catch (e) { /* 不存在即成功 */ }
       let handle;
       try {
-        handle = subprocess.spawn({
-          argv: [
-            sess.exe,
-            "--remote-debugging-port=0",
-            "--user-data-dir=" + sess.profileDir,
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--window-size=520,760",
-            cfg.loginUrl,
-          ],
-          cwd: sess.profileDir,
-          stdio: { stdin: "ignore", stdout: "ignore", stderr: { maxBytes: 64 * 1024 } },
-          graceMs: 5000,
-        });
+        handle = await spawnLoginBrowser(sess, cfg);
       } catch (e) {
         throw new Error("浏览器启动失败: " + ((e && e.message) || String(e)));
       }
       sess.handle = handle;
+      sess.spawnKind = handle.kind;
+      traceWindowFix(sess, "browser spawned kind=" + handle.kind + " pid=" + handle.pid);
       handle.done.then(
         function () { sess.exited = true; },
         function () { sess.exited = true; }
@@ -2048,8 +2189,8 @@ Write-Output ("total=" + $script:total + " hidden=" + $script:hidden + " shown="
       let diag = "";
       try {
         const h = sess.handle;
-        const stderr = h && h.collected && h.collected.stderr ? h.collected.stderr.readFrom(0) : null;
-        if (stderr && stderr.text) diag = "（浏览器输出: " + stderr.text.slice(0, 200).replace(/\s+/g, " ") + "）";
+        const txt = h && typeof h.stderrText === "function" ? h.stderrText() : "";
+        if (txt) diag = "（浏览器输出: " + txt.slice(0, 200).replace(/\s+/g, " ") + "）";
       } catch (e2) {}
       try { await closeBrowserForSession(sess); } catch (e2) {}
       finishLoginSession(sess, "failed", ((e && e.message) || String(e)) + diag);

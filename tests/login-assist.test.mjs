@@ -480,17 +480,21 @@ test("isAuthFailureMessage: 其它失败（网络/5xx/空）→ false，且数�
 
 // ───────────────────────── parseWindowVisibilityReport（窗口可见性修复脚本输出，2026-10） ─────────────────────────
 
-test("parseWindowVisibilityReport: 正常报告 → 对象", () => {
+test("parseWindowVisibilityReport: 完整报告（含 stuck）→ 对象", () => {
   assert.deepEqual(
-    L.parseWindowVisibilityReport("total=1 hidden=1 shown=1 pids=3"),
-    { total: 1, hidden: 1, shown: 1, pids: 3 }
+    L.parseWindowVisibilityReport("total=1 hidden=1 shown=1 pids=3 stuck=0"),
+    { total: 1, hidden: 1, shown: 1, pids: 3, stuck: 0 }
+  );
+  assert.deepEqual(
+    L.parseWindowVisibilityReport("total=2 hidden=2 shown=0 pids=4 stuck=2"),
+    { total: 2, hidden: 2, shown: 0, pids: 4, stuck: 2 }
   );
 });
 
-test("parseWindowVisibilityReport: 混在其它输出中也能提取", () => {
+test("parseWindowVisibilityReport: 旧格式（无 stuck）兼容 → stuck=0; 混在其它输出中也能提取", () => {
   assert.deepEqual(
     L.parseWindowVisibilityReport("some noise\ntotal=2 hidden=0 shown=0 pids=5\ntrailing"),
-    { total: 2, hidden: 0, shown: 0, pids: 5 }
+    { total: 2, hidden: 0, shown: 0, pids: 5, stuck: 0 }
   );
 });
 
