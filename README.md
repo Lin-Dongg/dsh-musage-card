@@ -84,6 +84,22 @@
 
 ## 变更记录
 
+### v1.6.6（2026-10）Windows 登录窗口「完全不可见」根因修复
+
+- **根因（2026-10-02 实机全链定位）**：DSH 的 local subprocess 服务在 Windows 上经
+  Job runner 启动子进程，runner 对目标一律带 `windowsHide: true`
+  （`dsh-subprocess-local/lib/runner-launch`: `windowsHide: platform === "win32"`）——
+  本意是隐藏控制台窗口，但 Windows 的启动显示状态继承让 GUI 子进程（Edge）的
+  首个窗口以**隐藏状态**创建（实测 `IsWindowVisible=false`，恢复需 `ShowWindow(SW_SHOW)`）：
+  窗口自出现起在屏幕上与任务栏中都不可见——CDP 仍可连接、页面正常渲染，
+  不是「白屏」也不是「被盖住」；`Page.bringToFront` 只能改焦点、不能恢复显示。
+  同机对照实验（同参数、唯一变量 `windowsHide`）：`true` → 窗口隐藏、`false` → 正常可见。
+- **修复**：登录会话建立 CDP 连接后，按 `--user-data-dir` 匹配 msedge 进程并检查其
+  窗口可见性；对隐藏窗口补一次 `ShowWindow(SW_SHOW)`（实测 `VISIBLE=false → true`
+  且稳定保持）；会话 15s 时单次复查（防「显示后再次隐藏」）。仅 Windows 生效、
+  失败静默（fail-open，不阻塞登录流程）。
+- 测试：`parseWindowVisibilityReport` 纯函数用例（报告解析 / 不完整输入不误判）。
+
 ### v1.6.5（2026-10）DeepSeek Account 登录 provider 支持
 
 - DSH 内置的「DeepSeek Account」登录式 provider（route id `deepseek-account`，

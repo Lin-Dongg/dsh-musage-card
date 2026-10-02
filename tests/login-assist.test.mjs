@@ -477,3 +477,27 @@ test("isAuthFailureMessage: 其它失败（网络/5xx/空）→ false，且数�
   assert.equal(L.isAuthFailureMessage(undefined), false);
   assert.equal(L.isAuthFailureMessage("HTTP 4010"), false, "4010 不应命中 401");
 });
+
+// ───────────────────────── parseWindowVisibilityReport（窗口可见性修复脚本输出，2026-10） ─────────────────────────
+
+test("parseWindowVisibilityReport: 正常报告 → 对象", () => {
+  assert.deepEqual(
+    L.parseWindowVisibilityReport("total=1 hidden=1 shown=1 pids=3"),
+    { total: 1, hidden: 1, shown: 1, pids: 3 }
+  );
+});
+
+test("parseWindowVisibilityReport: 混在其它输出中也能提取", () => {
+  assert.deepEqual(
+    L.parseWindowVisibilityReport("some noise\ntotal=2 hidden=0 shown=0 pids=5\ntrailing"),
+    { total: 2, hidden: 0, shown: 0, pids: 5 }
+  );
+});
+
+test("parseWindowVisibilityReport: 非报告文本/不完整 → null", () => {
+  assert.equal(L.parseWindowVisibilityReport("noise"), null);
+  assert.equal(L.parseWindowVisibilityReport(""), null);
+  assert.equal(L.parseWindowVisibilityReport(null), null);
+  assert.equal(L.parseWindowVisibilityReport(undefined), null);
+  assert.equal(L.parseWindowVisibilityReport("total=1 hidden=1"), null, "缺 shown/pids 不完整");
+});

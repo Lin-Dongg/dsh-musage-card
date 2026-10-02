@@ -32,7 +32,7 @@
 //   - `subprocess` 调 curl: DSH 部署里没有 fetch provider, 且 WebFetchProvider
 //     协议只支持 GET + url, 不能加 headers.
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -1087,6 +1087,16 @@ function isAuthFailureMessage(message) {
   return /unauthenticated|expired/i.test(text);
 }
 
+/** 解析窗口可见性修复脚本的一行报告（"total=1 hidden=1 shown=1 pids=3";
+ *  见 apply() 内 WINDOW_SHOW_PS）。非报告文本返回 null, 调用方据此判断
+ *  脚本未产出（环境不支持 / 尚未就绪）。纯函数, 单测直测。 */
+function parseWindowVisibilityReport(text) {
+  if (typeof text !== "string") return null;
+  const m = /total=(\d+)\s+hidden=(\d+)\s+shown=(\d+)\s+pids=(\d+)/.exec(text);
+  if (!m) return null;
+  return { total: Number(m[1]), hidden: Number(m[2]), shown: Number(m[3]), pids: Number(m[4]) };
+}
+
 /** Windows 浏览器可执行候选路径 (按优先级)。 */
 function browserCandidates(env) {
   const list = [
@@ -1318,6 +1328,7 @@ export const __login = {
   loginStatusSnapshot,
   parseLoginRequest,
   readJsonBody,
+  parseWindowVisibilityReport,
   // CDP 客户端（cdp-integration.test.mjs 用真实 headless 浏览器直测；
   // 生产编排在 apply() 内的登录会话里）。
   cdp: {
@@ -1662,6 +1673,106 @@ export function apply(ctx) {
     }
   }
 
+  /** Windows 登录窗口可见性修复（2026-10-02 实机根因）:
+   *  DSH 的 local subprocess 服务在 Windows 上用 Job runner 启动子进程,
+   *  runner 对目标一律带 `windowsHide: true`（dsh-subprocess-local/lib/
+   *  runner-launch: `windowsHide: platform === "win32"`）——本意是隐藏控制台,
+   *  但 Windows 的显示状态继承让 GUI 子进程（Edge）首个窗口以 SW_HIDE 创建:
+   *  实测窗口 IsWindowVisible=False 且 ICONIC=False、CDP windowState=normal,
+   *  `Page.bringToFront` 只改焦点、不能恢复显示; 补一次 ShowWindow(SW_SHOW)
+   *  可恢复且稳定保持（VISIBLE=False → True, ≥60s）。同机对照实验:
+   *  spawn 加不加 windowsHide → 窗口 False/True, 唯一变量。修复按
+   *  --user-data-dir 匹配 msedge 进程再匹配其窗口（不依赖 spawn handle 的
+   *  pid: runner 架构下那是 runner 进程, 窗口属于它的子进程）。失败静默
+   *  （fail-open, 不阻塞登录; 最坏退化为修复前行为）。 */
+  const WINDOW_SHOW_PS = `param([string]$UserDataDir)
+$def = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class MusageWinFix {
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder sb, int n);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+}
+'@
+Add-Type -TypeDefinition $def | Out-Null
+$needle = $UserDataDir.ToLowerInvariant()
+$edgePids = New-Object System.Collections.Generic.HashSet[int]
+Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
+  if ($_.CommandLine -and $_.CommandLine.ToLowerInvariant().Contains($needle)) { [void]$edgePids.Add([int]$_.ProcessId) }
+}
+$script:total = 0
+$script:hidden = 0
+$script:shown = 0
+$cb2 = [MusageWinFix+EnumProc]{
+  param($h, $l)
+  $wp = 0
+  [void][MusageWinFix]::GetWindowThreadProcessId($h, [ref]$wp)
+  if ($edgePids.Contains([int]$wp)) {
+    $sb = New-Object System.Text.StringBuilder 400
+    [void][MusageWinFix]::GetWindowText($h, $sb, 400)
+    if ($sb.Length -gt 0) {
+      $script:total++
+      if (-not [MusageWinFix]::IsWindowVisible($h)) {
+        $script:hidden++
+        [void][MusageWinFix]::ShowWindow($h, 5)
+        $script:shown++
+      }
+    }
+  }
+  return $true
+}
+[void][MusageWinFix]::EnumWindows($cb2, [IntPtr]::Zero)
+Write-Output ("total=" + $script:total + " hidden=" + $script:hidden + " shown=" + $script:shown + " pids=" + $edgePids.Count)`;
+
+  /** 把登录窗口从 SW_HIDE 恢复显示（见 WINDOW_SHOW_PS 注释）。最多 3 次
+   *  尝试（浏览器进程/窗口尚未就绪时重试）; 每次上限 10s; 全失败静默返回。 */
+  async function ensureLoginWindowVisible(sess) {
+    if (process.platform !== "win32") return null;
+    const subprocess = ctx.subprocess;
+    if (!subprocess || !sess || !sess.profileDir) return null;
+    const scriptPath = join(sess.profileDir, "musage-show-window.ps1");
+    try { writeFileSync(scriptPath, WINDOW_SHOW_PS, "utf8"); } catch (e) { return null; }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const handle = subprocess.spawn({
+          argv: [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy", "Bypass",
+            "-File", scriptPath,
+            "-UserDataDir", sess.profileDir,
+          ],
+          cwd: sess.profileDir,
+          stdio: { stdin: "ignore", stdout: { maxBytes: 32 * 1024 }, stderr: { maxBytes: 32 * 1024 } },
+          graceMs: 5000,
+        });
+        await Promise.race([
+          handle.waitForExit().then(function () { return true; }, function () { return true; }),
+          sleepMs(10000).then(function () { return false; }),
+        ]);
+        let out = "";
+        try {
+          const c = handle.collected && handle.collected.stdout;
+          if (c) { const r = c.readFrom(0); out = (r && r.text) || ""; }
+        } catch (e) { /* 无输出 */ }
+        const report = parseWindowVisibilityReport(out);
+        if (report) {
+          sess.windowVisibility = report;
+          // 进程与窗口都已找到（无论是否需要修复）→ 收工; 否则等窗口创建后重试。
+          if (report.pids > 0 && report.total > 0) return report;
+        }
+      } catch (e) { /* 单次尝试失败 → 重试 */ }
+      await sleepMs(1500);
+    }
+    return sess.windowVisibility || null;
+  }
+
   /** StepFun 账户总览（官网 account-overview 同源接口）:
    *  POST Connect-JSON QueryAccountBalance, 认证 = 整段 cookie + Oasis 头。
    *  用途: 登录试调自证 + 卡片附加 Step Plan/Credit 数据。
@@ -1776,6 +1887,10 @@ export function apply(ctx) {
       const ws = await cdpOpenWs(pageWsUrl, 10000);
       sess.sess = cdpSession(ws);
       if (sess.state !== "starting") return;
+      // Windows: runner 链 windowsHide 继承会把窗口创建为 SW_HIDE（不可见,
+      // 比「被盖住」严重——bringToFront 救不回来）, 先把窗口显示出来。
+      // 修复失败非致命（最坏退回修复前行为, 用户仍可通过任务栏找到窗口）。
+      try { await ensureLoginWindowVisible(sess); } catch (e) { /* 非致命 */ }
       // 把登录窗口带到前台 —— Windows 前台锁: 由后台进程(DSH host) spawn 的
       // 浏览器窗口默认可能被现有前台窗口(DSH 主窗口)盖住, 用户只看到窗口露出
       // 的白色边缘(登录页白底), 误判为「白屏」且看不到登录表单。
@@ -1842,6 +1957,12 @@ export function apply(ctx) {
             }
           }
         } catch (e) { /* CDP 过渡态: 忽略本轮采样 */ }
+        // 窗口可见性复查（仅当首轮修复过隐藏窗口时, 会话 15s 时单次）:
+        // 防御「显示后被再次隐藏」（未证实现象, 保守兜底; 未修复过则不白跑）。
+        if (sess.windowVisibility && sess.windowVisibility.shown > 0 && !sess.windowRecheckDone && nowMs() - sess.startedAt >= 15000) {
+          sess.windowRecheckDone = true;
+          try { await ensureLoginWindowVisible(sess); } catch (e) { /* 非致命 */ }
+        }
         // 跨域换票（StepFun, 2026-10-01 实机）: 目标域无凭证但账号域已有 → 导航
         // via.returnUrl 触发换票, 下一轮轮询读目标域。只做一次（viaNavigated 防环）。
         if (!hasLoginMarker(sess.provider, cookies) && cfg.via && !sess.viaNavigated) {
