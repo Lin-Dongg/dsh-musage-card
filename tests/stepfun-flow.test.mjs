@@ -67,7 +67,7 @@ test("stepfun: oasis 已连接 → 简化布局（💰 余额+消费合并行）
   preset([
     "s1", undefined,
     "stepfun", "stepfun", undefined,
-    { ok: true, loaded: true, kind: "ok", message: null, display: {
+    { ok: true, loaded: true, kind: "ok", message: null, logoutSupported: true, display: {
       balanceUsd: 12, balanceText: "¥12.00", balanceLabel: "余额",
       balanceDetail: "现金 ¥10.00 · 代金券 ¥2.00",
       oasis: { balance: 5.96, costYesterday: 4.57, costMonth: 4.47, voucher: 5.96 },
@@ -81,6 +81,7 @@ test("stepfun: oasis 已连接 → 简化布局（💰 余额+消费合并行）
   assert.ok(flat.includes("💰 余额 ¥5.96"), "应渲染合并钱包行（oasis 余额）");
   assert.ok(flat.includes("昨日 ¥4.57"), "应含昨日消费");
   assert.ok(flat.includes("本月 ¥4.47"), "应含本月消费");
+  assert.ok(flat.includes("dsh-musage-card__logout") && flat.includes("登出"), "应渲染右上角「登出」按钮（host 标记 logoutSupported）");
   assert.ok(!flat.includes("🔑"), "oasis 已连接时不应出现登录引导");
   // 简化后不再渲染: 🧾 明细行 / Plan ¥ 明细 / 大字余额行（2026-10-01 用户指定）
   assert.ok(!flat.includes("🧾"), "oasis 明细行已并入钱包行");
@@ -111,7 +112,7 @@ test("stepfun: 登录进行中 → 🔓 状态行", () => {
   preset([
     "s1", undefined,
     "stepfun", "stepfun", undefined,
-    { ok: true, loaded: true, kind: "ok", message: null,
+    { ok: true, loaded: true, kind: "ok", message: null, logoutSupported: true,
       loginAssist: { supported: true, ref: "STEPFUN_COOKIE" },
       display: { balanceText: "¥12.00" } },
     0,
@@ -121,6 +122,7 @@ test("stepfun: 登录进行中 → 🔓 状态行", () => {
   const flat = JSON.stringify(reg.comp({ wide: true }));
   assert.ok(flat.includes("🔓"), "登录中应显示 🔓 行");
   assert.ok(flat.includes("请在页面中完成登录"), "应带 host 侧 message");
+  assert.ok(!flat.includes("登出"), "登录进行中应隐藏「登出」按钮（canLogoutFor 前置条件）");
 });
 
 test("stepfun: 缺 oasis 且 host 未附 loginAssist → 回落 planNote（防御路径）", () => {
