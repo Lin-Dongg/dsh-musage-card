@@ -348,11 +348,22 @@ test("LOGIN_ASSIST: stepfun 条目 —— ref / 登录页 / 标记 cookie / 换�
   assert.ok(String(cfg.loginUrl).includes("account.stepfun.com"), "登录页应为账号域");
   assert.deepEqual(cfg.markerCookies, ["Oasis-Token"]);
   assert.equal(cfg.extract, "all");
-  // 跨域换票（2026-10-01 联调实测机制）: 账号域凭证出现后导航 returnTo 页
+  // 换票/自愈的导航目标 = 登录页
   assert.ok(cfg.via, "缺跨域换票配置");
   assert.ok(Array.isArray(cfg.via.urls) && cfg.via.urls.length > 0);
-  assert.ok(String(cfg.via.returnUrl).includes("returnTo"), "换票 URL 应带 returnTo");
-  assert.ok(String(cfg.via.returnUrl).includes("account.stepfun.com"));
+  assert.equal(String(cfg.via.returnUrl), String(cfg.loginUrl), "换票目标应为同一登录页");
+});
+
+test("LOGIN_ASSIST.stepfun: loginUrl 用平台自身 redirect 格式（2026-10-02 无数据修复回归）", () => {
+  // 回归背景：旧值 …/login?redirect=%2F%3FreturnTo%3D… 用了账号域不识别的 returnTo 参数 ——
+  // 实机复现「登录成功后只落到 /security、平台 Oasis-Token 永不刷新、卡片无数据」。
+  // 平台自身的跳转格式为 login?redirect=<平台URL>&source_app=platform-cn（2026-10-02 实测）。
+  const cfg = L.LOGIN_ASSIST.stepfun;
+  const u = String(cfg.loginUrl);
+  assert.ok(u.startsWith("https://account.stepfun.com/login?redirect="), u);
+  assert.ok(u.includes(encodeURIComponent("https://platform.stepfun.com/account-overview")), "redirect 必须指向平台页: " + u);
+  assert.ok(u.includes("source_app=platform-cn"), u);
+  assert.ok(!u.includes("returnTo="), "不得再用账号域不识别的 returnTo 参数: " + u);
 });
 
 // ───────────────────────── parseStepfunPlanRateLimit / Status ─────────────────────────

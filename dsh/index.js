@@ -207,6 +207,16 @@ const PROVIDERS = {
 //   - markerCookies: 登录成功的标志 cookie 名 (出现且值非空才进入 API 试调)
 //   - extract:       "all" = 全量拼接为完整 Cookie header;
 //                    "name:<cookie名>" = 只取该 cookie 的值
+// StepFun 登录入口（2026-10-02 实机实证）: 平台自身对未登录会话的跳转格式就是
+// account.stepfun.com/login?redirect=<平台URL>&source_app=platform-cn —— 登录成功后
+// 账号域按 redirect 参数把浏览器送回平台页, 平台域随之签发新的 Oasis-Token。
+// 旧值用的是编造参数 redirect=/?returnTo=...: 账号域不识别 returnTo, 登录后只落到
+// /security, 平台 token 永不刷新 —— 实机复现「登录好了但卡片没有数据」。
+const STEPFUN_LOGIN_URL =
+  "https://account.stepfun.com/login?redirect=" +
+  encodeURIComponent("https://platform.stepfun.com/account-overview") +
+  "&source_app=platform-cn";
+
 const LOGIN_ASSIST = {
   xiaomi: {
     ref: "XIAOMI_MIMO_COOKIE",
@@ -230,17 +240,17 @@ const LOGIN_ASSIST = {
   },
   stepfun: {
     ref: "STEPFUN_COOKIE",
-    // StepFun 账号域登录页, redirect 带回 account-overview（登录后回跳）。2026-10-01 实机探测。
-    loginUrl: "https://account.stepfun.com/login?redirect=%2F%3FreturnTo%3Dhttps%253A%252F%252Fplatform.stepfun.com%252Faccount-overview",
+    // 登录页 = 账号域登录页 + redirect 指向平台页（见上方 STEPFUN_LOGIN_URL 注释）。
+    loginUrl: STEPFUN_LOGIN_URL,
     siteUrl: "https://platform.stepfun.com/",
     markerCookies: ["Oasis-Token"],
     extract: "all",
-    // 跨域换票（2026-10-01 联调实测）: 登录态先落在 account 域; 目标域出现凭证前,
-    // 若经 via.urls 检测到账号域已有凭证, 导航 via.returnUrl 完成换票
-    // （platform 域获得自己的 Oasis-Token 后, 原有轮询即可接手）。
+    // 跨域换票 / 自愈: 目标域凭证缺失或过期时, 导航回登录页重新走一遍授权
+    // （已登录 → 账号域按 redirect 把浏览器送回平台并签发新 token;
+    //   未登录 → 停在登录表单让用户登录）。旧 returnTo 参数实测不触发换票（2026-10-02）。
     via: {
       urls: ["https://account.stepfun.com/"],
-      returnUrl: "https://account.stepfun.com/?returnTo=" + encodeURIComponent("https://platform.stepfun.com/account-overview"),
+      returnUrl: STEPFUN_LOGIN_URL,
     },
   },
 };
@@ -1800,12 +1810,13 @@ export function apply(ctx) {
         // 采样失败静默（页面导航过渡态 CDP 会短暂失联），不影响主流程。
         try {
           const diagRaw = await sess.sess.call("Runtime.evaluate", {
-            expression: "JSON.stringify({text:(document.body&&document.body.innerText||'').slice(0,400),hasPassword:!!document.querySelector('input[type=password]')})",
+            expression: "JSON.stringify({href:location.href,text:(document.body&&document.body.innerText||'').slice(0,400),hasPassword:!!document.querySelector('input[type=password]')})",
             returnByValue: true,
           }, 5000);
           const pageSample = diagRaw && diagRaw.result && typeof diagRaw.result.value === "string"
             ? JSON.parse(diagRaw.result.value)
             : null;
+          if (pageSample && typeof pageSample.href === "string") sess.pageHref = pageSample.href;
           const pageClass = classifyLoginPage(pageSample);
           if (pageClass === "blank") {
             sess.blankTicks = (sess.blankTicks || 0) + 1;
@@ -1857,14 +1868,15 @@ export function apply(ctx) {
             sess.lastError = probe.message || null;
             // 自愈（2026-10-02 实机复现的卡死态）: 平台域存在旧凭证（如 StepFun
             // 的 Oasis-Token）但已被服务端判过期时, 原逻辑把「有 marker」当成
-            // 「已登录」→ 探针每 3s 失败一次、空转到 30 分钟超时。这里借账号域
-            // 做一次跨域换票重新签发目标域凭证（只做一次, viaNavigated 防环）:
-            // 账号域登录态仍有效 → 直接成功; 否则窗口停在账号域页面让用户重登。
+            // 「已登录」→ 探针每 3s 失败一次、空转到 30 分钟超时。
+            // 修复: 借登录页重新走一遍授权（已登录 → 账号域按 redirect 送回平台
+            // 并签发新 token; 未登录 → 停在登录表单）。只做一次（viaNavigated 防环）;
+            // 若用户此刻已在登录页上（别把人家正在输入的表单刷新掉），只给文案不动页面。
             if (cfg.via && !sess.viaNavigated && isAuthFailureMessage(probe.message)) {
-              let viaCookies = [];
-              try { viaCookies = await cdpGetCookies(sess.sess, cfg.via.urls); } catch (e) { /* 保持等待 */ }
-              if (hasLoginMarker(sess.provider, viaCookies)) {
-                sess.viaNavigated = true;
+              sess.viaNavigated = true;
+              const loginBase = String(cfg.loginUrl || "").split("?")[0];
+              const onLoginPage = !!(sess.pageHref && loginBase && String(sess.pageHref).indexOf(loginBase) === 0);
+              if (!onLoginPage) {
                 sess.message = "旧登录态已失效，正在重新验证…";
                 await cdpNavigate(sess.sess, cfg.via.returnUrl, 3000);
                 continue;   // 下一轮轮询读目标域 cookie
