@@ -210,9 +210,13 @@ const PROVIDERS = {
 const LOGIN_ASSIST = {
   xiaomi: {
     ref: "XIAOMI_MIMO_COOKIE",
-    // 直达控制台页: 未登录会自动跳转小米账号 SSO 登录页（2026-10-01 实机验证）。
-    // 不要用根域 —— 根域是营销页, 用户找不到登录入口。
-    loginUrl: "https://platform.xiaomimimo.com/console/balance",
+    // 直达登录: 服务端 302 端点（2026-10-02 探针复现「白屏」后改用）。
+    // 旧值 console/balance 是 SPA 空壳: 服务端不重定向, 要等 ~8-10s 客户端 JS
+    // 包加载并执行后才跳 SSO, 期间纯白无内容 —— 弱网 / JS 失败则一直白屏
+    //（朋友实机报告「点击卡片打开网页是白屏」即此）。
+    // genLoginUrl 由服务端直接 302 到小米账号 SSO: 1s 内进入登录页、3-4s 表单
+    // 就绪, 完全绕开 SPA 白屏期; currentPath 决定登录后 followup 回跳页。
+    loginUrl: "https://platform.xiaomimimo.com/api/v1/genLoginUrl?currentPath=%2Fconsole%2Fbalance",
     siteUrl: "https://platform.xiaomimimo.com/",
     markerCookies: ["api-platform_serviceToken"],
     extract: "all",
@@ -1045,6 +1049,19 @@ function hasLoginMarker(provider, cookies) {
   return false;
 }
 
+/** 登录页健康采样分类 (登录助手看门狗; 纯函数, 单测直测)。
+ *  sample: { text?, hasPassword? } —— CDP Runtime.evaluate 采到的页面快照。
+ *  返回: "login" 登录表单已就绪 | "error" 浏览器网络错误页 |
+ *        "blank" 无任何可见文本 (白屏) | "content" 有内容但未见表单。 */
+function classifyLoginPage(sample) {
+  if (!sample || typeof sample !== "object") return "blank";
+  if (sample.hasPassword === true) return "login";
+  const text = typeof sample.text === "string" ? sample.text : "";
+  if (/\bERR_[A-Z_]{2,}\b/.test(text)) return "error";
+  if (text.replace(/\s+/g, "").length === 0) return "blank";
+  return "content";
+}
+
 /** Windows 浏览器可执行候选路径 (按优先级)。 */
 function browserCandidates(env) {
   const list = [
@@ -1258,6 +1275,7 @@ export const __login = {
   joinCookieHeader,
   extractLoginCookie,
   hasLoginMarker,
+  classifyLoginPage,
   pickBrowserCandidates,
   browserCandidates,
   pickCookieValue,
@@ -1549,6 +1567,7 @@ export function apply(ctx) {
   const LOGIN_PROBE_MIN_MS = 3_000;      // API 试调最小间隔 (marker 出现后)
   const LOGIN_READY_TIMEOUT_MS = 30_000; // 等 DevToolsActivePort 的上限
   const LOGIN_MAX_MS = 30 * 60 * 1000;   // 单次会话硬上限
+  const LOGIN_BLANK_WARN_MS = 20_000;    // 登录页持续空白多久后在看门狗里给出提示（≈10 轮轮询）
 
   let loginSession = null;
 
@@ -1753,6 +1772,31 @@ export function apply(ctx) {
           await sleepMs(LOGIN_POLL_MS);
           continue;
         }
+        // 看门狗: 采样登录页健康度 —— 白屏 / 网络错误页时在卡片上给出可操作提示
+        // （此前卡片在整个等待期都固定显示「已打开浏览器…」, 窗口白屏时用户无从
+        //   判断哪里出了问题; 2026-10-02 白屏问题修复时一并加入）。
+        // 采样失败静默（页面导航过渡态 CDP 会短暂失联），不影响主流程。
+        try {
+          const diagRaw = await sess.sess.call("Runtime.evaluate", {
+            expression: "JSON.stringify({text:(document.body&&document.body.innerText||'').slice(0,400),hasPassword:!!document.querySelector('input[type=password]')})",
+            returnByValue: true,
+          }, 5000);
+          const pageSample = diagRaw && diagRaw.result && typeof diagRaw.result.value === "string"
+            ? JSON.parse(diagRaw.result.value)
+            : null;
+          const pageClass = classifyLoginPage(pageSample);
+          if (pageClass === "blank") {
+            sess.blankTicks = (sess.blankTicks || 0) + 1;
+            if (sess.blankTicks * LOGIN_POLL_MS >= LOGIN_BLANK_WARN_MS) {
+              sess.message = "登录页持续空白：请检查网络/代理，或在窗口中按 Ctrl+R 重试";
+            }
+          } else {
+            sess.blankTicks = 0;
+            sess.message = pageClass === "error"
+              ? "登录页无法访问（网络错误）：请检查网络/代理，或在窗口中刷新重试"
+              : "已打开浏览器，请在页面中完成登录…";
+          }
+        } catch (e) { /* CDP 过渡态: 忽略本轮采样 */ }
         // 跨域换票（StepFun, 2026-10-01 实机）: 目标域无凭证但账号域已有 → 导航
         // via.returnUrl 触发换票, 下一轮轮询读目标域。只做一次（viaNavigated 防环）。
         if (!hasLoginMarker(sess.provider, cookies) && cfg.via && !sess.viaNavigated) {
@@ -1843,6 +1887,7 @@ export function apply(ctx) {
       lastProbeAt: 0,
       lastError: null,
       exited: false,
+      blankTicks: 0,
     };
     const sess = loginSession;
     runLoginSession(sess, cfg).catch(function (e) {

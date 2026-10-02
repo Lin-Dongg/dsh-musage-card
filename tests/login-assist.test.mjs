@@ -394,3 +394,37 @@ test("parseStepfunPlanStatus: 无 subscription → null", () => {
   assert.equal(L.parseStepfunPlanStatus(null), null);
   assert.equal(L.parseStepfunPlanStatus({ status: 0 }), null);
 });
+
+// ───────────────────────── classifyLoginPage（看门狗，2026-10 白屏修复配套） ─────────────────────────
+
+test("classifyLoginPage: 密码框出现 → login（即使正文还空）", () => {
+  assert.equal(L.classifyLoginPage({ text: "", hasPassword: true }), "login");
+});
+
+test("classifyLoginPage: 无可见文本 → blank（白屏）", () => {
+  assert.equal(L.classifyLoginPage({ text: "", hasPassword: false }), "blank");
+  assert.equal(L.classifyLoginPage({ text: "   \n\t ", hasPassword: false }), "blank");
+  assert.equal(L.classifyLoginPage(null), "blank");
+  assert.equal(L.classifyLoginPage(undefined), "blank");
+});
+
+test("classifyLoginPage: 浏览器网络错误页（正文含 ERR_*）→ error", () => {
+  assert.equal(
+    L.classifyLoginPage({ text: "无法访问此网站\nERR_CONNECTION_TIMED_OUT", hasPassword: false }),
+    "error"
+  );
+});
+
+test("classifyLoginPage: 有内容但未见表单 → content", () => {
+  assert.equal(L.classifyLoginPage({ text: "加载中...", hasPassword: false }), "content");
+});
+
+test("LOGIN_ASSIST.xiaomi: loginUrl 走服务端 302 直达 SSO（白屏修复回归）", () => {
+  // 回归背景（2026-10-02 探针实证）：直接打开 console/balance 是 SPA 空壳，
+  // 服务端不重定向，需等 ~8-10s 客户端 JS 执行后才跳 SSO，期间纯白 ——
+  // 朋友实机因此报「点击卡片打开网页是白屏」。改用 genLoginUrl 服务端 302。
+  const u = String(L.LOGIN_ASSIST.xiaomi.loginUrl);
+  assert.ok(u.includes("platform.xiaomimimo.com/api/v1/genLoginUrl"), "应使用 genLoginUrl 服务端跳转端点: " + u);
+  assert.ok(u.includes("currentPath="), "应带 currentPath 参数: " + u);
+  assert.ok(!u.includes("console/balance"), "不应再直接打开 console SPA 空壳: " + u);
+});

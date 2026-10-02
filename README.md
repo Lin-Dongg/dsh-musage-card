@@ -84,6 +84,22 @@
 
 ## 变更记录
 
+### v1.6.1（2026-10）登录窗口白屏修复（MiMo 直达 SSO）+ 页面看门狗
+
+- **白屏根因（2026-10-02 探针复现）**：MiMo 登录窗口原先打开 `console/balance`
+  —— 该页是 SPA 空壳，服务端不重定向，要等客户端 JS 包加载执行后才跳小米账号 SSO，
+  期间 **约 8-10 秒纯白无内容**（弱网 / JS 失败则一直白屏）。实机反馈
+  「点击卡片打开网页是白屏」即此。
+- **修复**：登录窗口改为直接打开平台的服务端 302 端点
+  `platform.xiaomimimo.com/api/v1/genLoginUrl?currentPath=%2Fconsole%2Fbalance`
+  —— 服务端直接 302 到小米账号 SSO：**1s 内进入登录页、3-4s 表单就绪**，
+  完全绕开 SPA 白屏期（同机探针对比：旧 URL 白屏 ~8-10s → 新 URL 无白屏）。
+  登录后回跳与 cookie 落域不变（callback/followup 与旧路径完全一致）。
+- **看门狗**：登录会话每轮采样页面状态，持续空白 >20s 或落到浏览器网络错误页时，
+  卡片上给出可操作提示（检查网络/代理、Ctrl+R 重试），不再出现「窗口一片白、
+  卡片却一直提示请登录」的错位状态。
+- 测试：新增 `classifyLoginPage` 纯函数用例 + MiMo `loginUrl` 回归用例。
+
 ### v1.6.0（2026-10）StepFun 一键登录：读取 Step Plan Credit / 账户总览
 
 - **Host（`dsh/index.js`）**：登录助手新增 StepFun（登录页 `account.stepfun.com`；
