@@ -84,6 +84,19 @@
 
 ## 变更记录
 
+### v1.6.4（2026-10）卡片「登出」按钮
+
+- 卡片右上角新增小按钮 **登出**（仅 StepFun / 小米 MiMo / Claude 这类 Cookie 型 provider 显示）：
+  清除本插件保存的 Cookie 登录态（`credentials.unset` 公开 API；含 xiaomi 的兜底 refs），
+  **不影响你自配的 API Key**；清除后卡片立即回到「🔑 点击卡片登录」引导，
+  可重新走一遍一键登录（便于验证登录流程）。进行中的登录会话会被一并取消。
+- Host：`POST /musage/login?action=logout&provider=<p>`（与 start/cancel 同路由同鉴权，
+  仅同源回环可调）。
+- Client：头部右上角「登出」（悬停加深；点击不触发卡片本身的刷新/登录行为）；
+  StepFun 钱包行文案「昨 ¥」→「昨日 ¥」更易读。
+- 测试：logout 路由编排用例（Cookie 清掉 / API Key 不动 / 非登录 provider 拒绝）+
+  `parseLoginRequest(logout)` + 客户端 `canLogoutFor` 用例。
+
 ### v1.6.3（2026-10）StepFun 登录链路修正 —— 「登录成功但没数据」根因修复
 
 - **根因（2026-10-02 实机复现）**：StepFun 登录窗口旧 URL 用了账号域**不识别**的编造参数

@@ -79,7 +79,7 @@ test("stepfun: oasis 已连接 → 简化布局（💰 余额+消费合并行）
   ]);
   const flat = JSON.stringify(reg.comp({ wide: true }));
   assert.ok(flat.includes("💰 余额 ¥5.96"), "应渲染合并钱包行（oasis 余额）");
-  assert.ok(flat.includes("昨 ¥4.57"), "应含昨日消费");
+  assert.ok(flat.includes("昨日 ¥4.57"), "应含昨日消费");
   assert.ok(flat.includes("本月 ¥4.47"), "应含本月消费");
   assert.ok(!flat.includes("🔑"), "oasis 已连接时不应出现登录引导");
   // 简化后不再渲染: 🧾 明细行 / Plan ¥ 明细 / 大字余额行（2026-10-01 用户指定）

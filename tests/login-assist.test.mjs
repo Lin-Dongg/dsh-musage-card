@@ -235,6 +235,18 @@ test("parseLoginRequest: POST cancel → cancel 操作", () => {
   );
 });
 
+test("parseLoginRequest: POST logout + 受支持 provider → logout 操作（2026-10-02 登出按钮）", () => {
+  assert.deepEqual(
+    L.parseLoginRequest({ method: "POST", action: "logout", provider: "stepfun" }),
+    { ok: true, op: "logout", provider: "stepfun" }
+  );
+});
+
+test("parseLoginRequest: POST logout 缺 provider / 非登录 provider → 拒绝", () => {
+  assert.equal(L.parseLoginRequest({ method: "POST", action: "logout" }).ok, false);
+  assert.equal(L.parseLoginRequest({ method: "POST", action: "logout", provider: "deepseek" }).ok, false);
+});
+
 test("parseLoginRequest: 未知 action / 不支持 method → 拒绝", () => {
   assert.equal(L.parseLoginRequest({ method: "POST", action: "nope" }).ok, false);
   assert.equal(L.parseLoginRequest({ method: "DELETE" }).ok, false);

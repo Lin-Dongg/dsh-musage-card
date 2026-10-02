@@ -43,6 +43,7 @@ const ctx = {
       ? { value: credentialsStore.get(ref), source: "file" }
       : undefined,
     set: async (ref, value) => { credentialsStore.set(ref, value); },
+    unset: async (ref) => { credentialsStore.delete(ref); },
   },
   subprocess: {
     resolveExecutable: async (name) => name,
@@ -191,4 +192,25 @@ test("编排: 参数校验 / cancel 幂等 / dispose 清理", { timeout: 30000 }
   for (const d of disposers) { try { d(); } catch (e) {} }
   await sleep(1500);
   assert.equal(children.size, 0, "dispose 后不应有浏览器进程残留");
+});
+
+// ---------- 退出登录（清除 Cookie 型凭据; 2026-10-02） ----------
+
+test("logout 路由: 清 Cookie 凭据（含兜底 ref），不动用户自配的 API Key", { timeout: 15000 }, async () => {
+  credentialsStore.set("STEPFUN_COOKIE", "fake-cookie-value");
+  credentialsStore.set("STEPFUN_API_KEY", "fake-api-key");
+  credentialsStore.set("XIAOMI_MIMO_COOKIE", "fake-cookie-2");
+  const r1 = await callRoute("/musage/login", "POST", "/musage/login?action=logout&provider=stepfun");
+  assert.equal(r1.status, 200);
+  assert.equal(r1.body.ok, true, JSON.stringify(r1.body));
+  assert.equal(credentialsStore.has("STEPFUN_COOKIE"), false, "STEPFUN_COOKIE 应被清除");
+  assert.equal(credentialsStore.has("STEPFUN_API_KEY"), true, "用户自配的 API Key 不应被动到");
+  // xiaomi: 登录 ref + fallbackAuth 的 Cookie 兜底 refs 一起清
+  const r2 = await callRoute("/musage/login", "POST", "/musage/login?action=logout&provider=xiaomi");
+  assert.equal(r2.status, 200);
+  assert.equal(r2.body.ok, true, JSON.stringify(r2.body));
+  assert.equal(credentialsStore.has("XIAOMI_MIMO_COOKIE"), false, "XIAOMI_MIMO_COOKIE 应被清除");
+  // 非登录助手 provider → 400
+  const r3 = await callRoute("/musage/login", "POST", "/musage/login?action=logout&provider=deepseek");
+  assert.equal(r3.status, 400);
 });

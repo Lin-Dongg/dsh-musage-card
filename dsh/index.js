@@ -1250,6 +1250,13 @@ function parseLoginRequest(input) {
     if (!LOGIN_ASSIST[provider]) return { ok: false, message: "该 provider 不支持自动登录: " + provider };
     return { ok: true, op: "start", provider: provider };
   }
+  if (action === "logout") {
+    // 退出登录（清除本插件写入的 Cookie 型凭据; 2026-10-02 用户需求：便于重新验证登录流程）
+    const provider = String((input && input.provider) || "");
+    if (!provider) return { ok: false, message: "缺少 provider 参数" };
+    if (!LOGIN_ASSIST[provider]) return { ok: false, message: "该 provider 没有可清除的登录态: " + provider };
+    return { ok: true, op: "logout", provider: provider };
+  }
   return { ok: false, message: "未知 action: " + action };
 }
 
@@ -1611,6 +1618,8 @@ export function apply(ctx) {
     if (!result) return result;
     const info = loginAssistInfo(provider);
     if (!info.supported) return result;
+    // 卡片右上角「登出」按钮的开关: 只有 Cookie 型（登录助手）provider 才可清登录态
+    result.logoutSupported = true;
     if (!result.ok) {
       result.loginAssist = { supported: true, ref: info.ref };
       return result;
@@ -1963,6 +1972,48 @@ export function apply(ctx) {
     return { ok: true, message: "已取消登录" };
   }
 
+  /** 退出登录（2026-10-02）: 清除本插件为 provider 写入的 Cookie 型凭据, 卡片随即回到
+   *  「🔑 点击卡片登录」引导, 可重新走一遍一键登录（便于验证登录流程）。
+   *  只清登录助手管理的 ref（登录 ref + Cookie 兜底 refs）——用户自配的 API Key 不动;
+   *  进行中的登录会话一并取消（避免刚清完又被写回）。凭据删除走 credentials.unset 公开 API。 */
+  async function logoutProvider(provider) {
+    const cfg = LOGIN_ASSIST[provider];
+    if (!cfg) return { ok: false, message: "该 provider 没有可清除的登录态: " + provider };
+    if (loginSession && loginSession.provider === provider && LOGIN_ACTIVE_STATES.indexOf(loginSession.state) >= 0) {
+      await cancelLoginSession();
+    }
+    const credentials = ctx.credentials;
+    if (!credentials || typeof credentials.unset !== "function") {
+      return { ok: false, message: "当前环境不支持自动清除凭据（请手动编辑 ~/.dsh/.credentials.yaml 删除 " + cfg.ref + "）" };
+    }
+    const refs = [cfg.ref];
+    const pcfg = PROVIDERS[provider];
+    if (pcfg && pcfg.fallbackAuth && Array.isArray(pcfg.fallbackAuth.refs)) {
+      for (const r of pcfg.fallbackAuth.refs) {
+        if (refs.indexOf(r) < 0) refs.push(r);
+      }
+    }
+    let cleared = 0;
+    for (const ref of refs) {
+      try {
+        let wasConfigured = true;
+        if (typeof credentials.describe === "function") {
+          const info = await credentials.describe(ref);
+          wasConfigured = !!(info && info.configured);
+        }
+        await credentials.unset(ref);   // 不存在时是 no-op（dsh-credentials 语义）
+        if (wasConfigured) cleared++;
+      } catch (e) { /* ref 不存在 / 只读遮蔽 / 不可删: 忽略单项 */ }
+    }
+    cache[provider] = null; // 下一次拉取立即重算 → 卡片回到「需要登录」态
+    return {
+      ok: true,
+      message: cleared > 0
+        ? "已退出登录（清除 " + cleared + " 个凭据 ref）"
+        : "本机没有保存过该 provider 的登录态",
+    };
+  }
+
   // 后台轮询: 60s 拉一次每个已知 provider (预热缓存)
   const disposeTimer = ctx.timer.interval(async () => {
     for (const provider of Object.keys(PROVIDERS)) {
@@ -2077,6 +2128,10 @@ export function apply(ctx) {
               }
               if (parsed.op === "cancel") {
                 send(200, await cancelLoginSession());
+                return;
+              }
+              if (parsed.op === "logout") {
+                send(200, await logoutProvider(parsed.provider));
                 return;
               }
               send(200, startLoginSession(parsed.provider));

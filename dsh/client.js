@@ -150,12 +150,34 @@ window.__ModuleLoader__.load({
       return res.json();
     }
 
+    // 退出登录: 清 host 侧已保存的 Cookie 型凭据（卡片右上角「登出」按钮用;
+    // 不走 /musage/login 的 action 之外的新路由, 与 postLogin 同源同鉴权）。
+    async function postLogout(provider) {
+      const res = await fetch("/musage/login?action=logout&provider=" + encodeURIComponent(provider), {
+        method: "POST",
+        headers: { accept: "application/json" },
+        credentials: "same-origin",
+      });
+      if (!res.ok) {
+        throw new Error("logout HTTP " + res.status);
+      }
+      return res.json();
+    }
+
     // ---- 登录交互决策 (纯函数; 渲染与测试共用) ----
 
     /** 是否应展示「点击登录」入口 —— host 在响应上带 loginAssist 即为可登录
      *  （失败态全 provider; stepfun 成功态缺网页数据时也带）。host 是唯一事实源。 */
     function canLoginAssistFor(state) {
       return !!(state && state.loaded && state.loginAssist && state.loginAssist.supported);
+    }
+
+    /** 是否应展示右上角「登出」按钮 —— host 标记 logoutSupported（Cookie 型 provider）
+     *  且当前没有进行中的登录会话。 */
+    function canLogoutFor(state, login) {
+      if (!state || !state.loaded || !state.logoutSupported) return false;
+      if (login && login.active) return false;
+      return true;
     }
 
     /** 卡片点击的动作决策: 登录中→noop; 可登录→login; 其余→refresh。 */
@@ -317,6 +339,20 @@ window.__ModuleLoader__.load({
       "  transition: opacity 0.15s ease;",
       "}",
       ".dsh-musage-card:hover .dsh-musage-card__refresh { opacity: 1; }",
+      "/* 「登出」小按钮（卡片右上角; 2026-10-02 用户需求：便于退出后重新验证登录流程） */",
+      ".dsh-musage-card__logout {",
+      "  margin-left: auto;",
+      "  flex: none;",
+      "  font-size: 10px;",
+      "  line-height: 1;",
+      "  padding: 1px 4px;",
+      "  border-radius: 3px;",
+      "  color: var(--dsw-alias-label-tertiary, #999);",
+      "  opacity: 0.45;",
+      "  transition: opacity 0.15s ease, color 0.15s ease;",
+      "}",
+      ".dsh-musage-card:hover .dsh-musage-card__logout { opacity: 1; }",
+      ".dsh-musage-card__logout:hover { color: var(--dsw-alias-label-primary, #eee); }",
       ".dsh-musage-card__row {",
       "  display: flex;",
       "  align-items: center;",
@@ -603,6 +639,8 @@ window.__ModuleLoader__.load({
       // 失败态且 host 标记支持登录助手 → 点击卡片 = 发起登录; 登录中 = no-op;
       // 其余（正常态）= 手动刷新 (60s 定时不变)。决策在 decideCardClick 纯函数里。
       const canLoginAssist = canLoginAssistFor(state);
+      // 右上角「登出」按钮（Cookie 型 provider 且不在登录中）
+      const canLogout = canLogoutFor(state, login);
       const triggerLogin = async () => {
         if (!provider) return;
         setLogin({ active: true, state: "starting", message: "正在启动浏览器…", provider: provider });
@@ -624,6 +662,16 @@ window.__ModuleLoader__.load({
         if (action === "noop") return;                       // 登录中: 忽略重复点击
         if (action === "login") { triggerLogin(); return; }
         setRetrySeq((s) => s + 1);
+      };
+      // 「登出」: 只清登录助手保存的 Cookie 凭据并立即重拉; stopPropagation 保证
+      // 不触发卡片本身的刷新/登录点击。
+      const onLogoutClick = async (e) => {
+        if (e && typeof e.stopPropagation === "function") e.stopPropagation();
+        if (!provider) return;
+        try {
+          await postLogout(provider);
+          setRetrySeq((s) => s + 1);   // 立即重拉 → 卡片回到「需要登录」引导
+        } catch (err) { /* 静默: 下一轮轮询会给出真实状态 */ }
       };
 
       const d = (state && state.display) || {};
@@ -681,6 +729,14 @@ window.__ModuleLoader__.load({
                 className: "dsh-musage-card__resetsHead",
                 title: "窗口重置倒计时（左 5h · 右 7d，重置后用量清零）",
               }, resetText)
+            : null,
+          canLogout
+            ? React.createElement("span", {
+                key: "logout",
+                className: "dsh-musage-card__logout",
+                title: "退出登录（清除本插件保存的登录 Cookie；你自配的 API Key 不受影响）\n退出后可点击卡片重新登录验证。",
+                onClick: onLogoutClick,
+              }, "登出")
             : null
         ),
       ];
@@ -807,7 +863,7 @@ window.__ModuleLoader__.load({
             const o = d.oasis;
             const ob = [];
             if (typeof o.balance === "number") ob.push("余额 ¥" + o.balance.toFixed(2));
-            if (typeof o.costYesterday === "number" && o.costYesterday > 0) ob.push("昨 ¥" + o.costYesterday.toFixed(2));
+            if (typeof o.costYesterday === "number" && o.costYesterday > 0) ob.push("昨日 ¥" + o.costYesterday.toFixed(2));
             if (typeof o.costMonth === "number" && o.costMonth > 0) ob.push("本月 ¥" + o.costMonth.toFixed(2));
             children.push(React.createElement("div", {
               key: "wallet",
@@ -918,7 +974,7 @@ window.__ModuleLoader__.load({
     exports.apply = apply;
     exports.inject = ["slots", "timer", "modelDirectories"];
     /** 测试出口（node:test 直测 route→provider 映射；不参与 cordis 装配）。 */
-    exports.__test = { readActiveProvider, PROVIDER_ALIASES, canLoginAssistFor, decideCardClick, loginNoteFor };
+    exports.__test = { readActiveProvider, PROVIDER_ALIASES, canLoginAssistFor, canLogoutFor, decideCardClick, loginNoteFor };
     return module.exports;
   },
 });

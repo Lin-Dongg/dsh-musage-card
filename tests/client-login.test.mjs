@@ -24,7 +24,7 @@ const mod = captured.factory((id) => {
   throw new Error("unexpected require: " + id);
 });
 
-const { canLoginAssistFor, decideCardClick, loginNoteFor } = mod.__test;
+const { canLoginAssistFor, canLogoutFor, decideCardClick, loginNoteFor } = mod.__test;
 
 // ───────────────────────── canLoginAssistFor ─────────────────────────
 
@@ -36,6 +36,18 @@ test("canLoginAssistFor: 以 host 附着为唯一事实源（含 stepfun 成功�
   assert.equal(canLoginAssistFor({ loaded: true, ok: false, loginAssist: { supported: false } }), false);
   assert.equal(canLoginAssistFor({ loaded: false, ok: false, loginAssist: { supported: true } }), false); // 加载中
   assert.equal(canLoginAssistFor(null), false);
+});
+
+// ───────────────────────── canLogoutFor（右上角「登出」按钮） ─────────────────────────
+
+test("canLogoutFor: host 标记 logoutSupported 且不在登录中才显示", () => {
+  assert.equal(canLogoutFor({ loaded: true, ok: true, logoutSupported: true }, { active: false }), true);    // 成功态可登出
+  assert.equal(canLogoutFor({ loaded: true, ok: false, logoutSupported: true }, { active: false }), true);   // 失败态也可（清坏凭据）
+  assert.equal(canLogoutFor({ loaded: true, ok: true, logoutSupported: true }, { active: true }), false);    // 登录中隐藏
+  assert.equal(canLogoutFor({ loaded: true, ok: true }, { active: false }), false);                          // host 未标记（API Key 型 provider）
+  assert.equal(canLogoutFor({ loaded: false, ok: false, logoutSupported: true }, { active: false }), false); // 加载中
+  assert.equal(canLogoutFor(null, { active: false }), false);
+  assert.equal(canLogoutFor({ loaded: true, ok: true, logoutSupported: true }, null), true);                 // 无 login 状态视为非登录中
 });
 
 // ───────────────────────── decideCardClick ─────────────────────────
