@@ -1062,6 +1062,21 @@ function classifyLoginPage(sample) {
   return "content";
 }
 
+/** 登录会话的卡片文案（常量便于统一维护与测试断言）。 */
+const LOGIN_MSG_READY = "已打开浏览器，请在页面中完成登录…";
+const LOGIN_MSG_BLANK = "登录页持续空白：请检查网络/代理，或在窗口中按 Ctrl+R 重试";
+const LOGIN_MSG_ERROR = "登录页无法访问（网络错误）：请检查网络/代理，或在窗口中刷新重试";
+const LOGIN_MSG_STALE = "登录态已失效：请在浏览器窗口中重新登录";
+
+/** 探针失败信息是否像「凭证被拒 / 已过期」（跨域换票自愈与文案分派的判据; 纯函数）。
+ *  例: curlFetch 的 "HTTP 401 · {...}"、StepFun Oasis 的
+ *  `{"code":"unauthenticated","message":"auth failed: token is expired"}`。 */
+function isAuthFailureMessage(message) {
+  const text = String(message || "");
+  if (/\b(401|403)\b/.test(text)) return true;
+  return /unauthenticated|expired/i.test(text);
+}
+
 /** Windows 浏览器可执行候选路径 (按优先级)。 */
 function browserCandidates(env) {
   const list = [
@@ -1276,6 +1291,7 @@ export const __login = {
   extractLoginCookie,
   hasLoginMarker,
   classifyLoginPage,
+  isAuthFailureMessage,
   pickBrowserCandidates,
   browserCandidates,
   pickCookieValue,
@@ -1741,8 +1757,14 @@ export function apply(ctx) {
       const ws = await cdpOpenWs(pageWsUrl, 10000);
       sess.sess = cdpSession(ws);
       if (sess.state !== "starting") return;
+      // 把登录窗口带到前台 —— Windows 前台锁: 由后台进程(DSH host) spawn 的
+      // 浏览器窗口默认可能被现有前台窗口(DSH 主窗口)盖住, 用户只看到窗口露出
+      // 的白色边缘(登录页白底), 误判为「白屏」且看不到登录表单。
+      // 2026-10-02 实机复现: 窗口 left=158/top=0/520x760、hasFocus=false;
+      // 调 bringToFront 后 hasFocus=true。失败非致命, 不影响流程。
+      try { await sess.sess.call("Page.bringToFront", {}, 5000); } catch (e) { /* 非致命 */ }
       sess.state = "waiting";
-      sess.message = "已打开浏览器，请在页面中完成登录…";
+      sess.message = LOGIN_MSG_READY;
       // 4) 轮询: marker → 试调 API → 写凭据 → 关窗
       while (sess.state === "waiting") {
         if (sess.exited) {
@@ -1788,13 +1810,16 @@ export function apply(ctx) {
           if (pageClass === "blank") {
             sess.blankTicks = (sess.blankTicks || 0) + 1;
             if (sess.blankTicks * LOGIN_POLL_MS >= LOGIN_BLANK_WARN_MS) {
-              sess.message = "登录页持续空白：请检查网络/代理，或在窗口中按 Ctrl+R 重试";
+              sess.message = LOGIN_MSG_BLANK;
             }
           } else {
             sess.blankTicks = 0;
-            sess.message = pageClass === "error"
-              ? "登录页无法访问（网络错误）：请检查网络/代理，或在窗口中刷新重试"
-              : "已打开浏览器，请在页面中完成登录…";
+            if (pageClass === "error") {
+              sess.message = LOGIN_MSG_ERROR;
+            } else if (sess.message === LOGIN_MSG_BLANK || sess.message === LOGIN_MSG_ERROR) {
+              // 页面恢复可读 → 收起看门狗提示; 不覆盖探针/换票等更具体的状态文案。
+              sess.message = LOGIN_MSG_READY;
+            }
           }
         } catch (e) { /* CDP 过渡态: 忽略本轮采样 */ }
         // 跨域换票（StepFun, 2026-10-01 实机）: 目标域无凭证但账号域已有 → 导航
@@ -1830,7 +1855,24 @@ export function apply(ctx) {
               return;
             }
             sess.lastError = probe.message || null;
-            sess.message = "已检测到凭证但尚未生效，继续等待…";
+            // 自愈（2026-10-02 实机复现的卡死态）: 平台域存在旧凭证（如 StepFun
+            // 的 Oasis-Token）但已被服务端判过期时, 原逻辑把「有 marker」当成
+            // 「已登录」→ 探针每 3s 失败一次、空转到 30 分钟超时。这里借账号域
+            // 做一次跨域换票重新签发目标域凭证（只做一次, viaNavigated 防环）:
+            // 账号域登录态仍有效 → 直接成功; 否则窗口停在账号域页面让用户重登。
+            if (cfg.via && !sess.viaNavigated && isAuthFailureMessage(probe.message)) {
+              let viaCookies = [];
+              try { viaCookies = await cdpGetCookies(sess.sess, cfg.via.urls); } catch (e) { /* 保持等待 */ }
+              if (hasLoginMarker(sess.provider, viaCookies)) {
+                sess.viaNavigated = true;
+                sess.message = "旧登录态已失效，正在重新验证…";
+                await cdpNavigate(sess.sess, cfg.via.returnUrl, 3000);
+                continue;   // 下一轮轮询读目标域 cookie
+              }
+            }
+            sess.message = isAuthFailureMessage(probe.message)
+              ? LOGIN_MSG_STALE
+              : "已检测到凭证但尚未生效，继续等待…";
           }
         }
         await sleepMs(LOGIN_POLL_MS);

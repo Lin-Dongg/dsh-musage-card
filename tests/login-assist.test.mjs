@@ -428,3 +428,29 @@ test("LOGIN_ASSIST.xiaomi: loginUrl 走服务端 302 直达 SSO（白屏修复�
   assert.ok(u.includes("currentPath="), "应带 currentPath 参数: " + u);
   assert.ok(!u.includes("console/balance"), "不应再直接打开 console SPA 空壳: " + u);
 });
+
+// ───────────────────────── isAuthFailureMessage（旧登录态自愈判据，2026-10） ─────────────────────────
+
+test("isAuthFailureMessage: curl HTTP 401/403 → true", () => {
+  assert.equal(L.isAuthFailureMessage('HTTP 401 · {"code":401}'), true);
+  assert.equal(L.isAuthFailureMessage("HTTP 403 · forbidden"), true);
+});
+
+test("isAuthFailureMessage: Oasis 过期 / 未认证文案 → true", () => {
+  // StepFun 实机（2026-10-02）: {"code":"unauthenticated","message":"auth failed: token is expired"}
+  assert.equal(
+    L.isAuthFailureMessage('{"code":"unauthenticated","message":"auth failed: token is expired"}'),
+    true
+  );
+  assert.equal(L.isAuthFailureMessage("token is expired"), true);
+  assert.equal(L.isAuthFailureMessage("Unauthenticated"), true);
+});
+
+test("isAuthFailureMessage: 其它失败（网络/5xx/空）→ false，且数字不误判", () => {
+  assert.equal(L.isAuthFailureMessage("HTTP 500 · oops"), false);
+  assert.equal(L.isAuthFailureMessage("curl 退出 7 · failed to connect"), false);
+  assert.equal(L.isAuthFailureMessage(""), false);
+  assert.equal(L.isAuthFailureMessage(null), false);
+  assert.equal(L.isAuthFailureMessage(undefined), false);
+  assert.equal(L.isAuthFailureMessage("HTTP 4010"), false, "4010 不应命中 401");
+});
