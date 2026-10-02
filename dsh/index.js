@@ -32,7 +32,7 @@
 //   - `subprocess` 调 curl: DSH 部署里没有 fetch provider, 且 WebFetchProvider
 //     协议只支持 GET + url, 不能加 headers.
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -1729,19 +1729,39 @@ $cb2 = [MusageWinFix+EnumProc]{
 [void][MusageWinFix]::EnumWindows($cb2, [IntPtr]::Zero)
 Write-Output ("total=" + $script:total + " hidden=" + $script:hidden + " shown=" + $script:shown + " pids=" + $edgePids.Count)`;
 
+  /** 窗口修复诊断 trace: 追加到 profile 目录下的 musage-window-fix.log。
+   *  DSH console 落点随部署而异, 修复过程留一份落盘记录便于排查
+   *  （resolve 到的 PowerShell 路径 / spawn 结果 / 脚本 stdout）。 */
+  function traceWindowFix(sess, msg) {
+    try { appendFileSync(join(sess.profileDir, "musage-window-fix.log"), new Date().toISOString() + " " + msg + "\n"); } catch (e) {}
+  }
+
   /** 把登录窗口从 SW_HIDE 恢复显示（见 WINDOW_SHOW_PS 注释）。最多 3 次
-   *  尝试（浏览器进程/窗口尚未就绪时重试）; 每次上限 10s; 全失败静默返回。 */
+   *  尝试（浏览器进程/窗口尚未就绪时重试）; 每次上限 10s; 全失败静默返回。
+   *  PowerShell 经 resolveExecutable 解析绝对路径——DSH 的 subprocess runner
+   *  会清理子进程环境, PATH 裸名查找不可靠（与 resolveCurl 同因）。 */
   async function ensureLoginWindowVisible(sess) {
     if (process.platform !== "win32") return null;
     const subprocess = ctx.subprocess;
     if (!subprocess || !sess || !sess.profileDir) return null;
+    let psExe = null;
+    try {
+      psExe = await subprocess.resolveExecutable("powershell.exe");
+      traceWindowFix(sess, "resolveExecutable(powershell.exe) -> " + psExe);
+    } catch (e) {
+      traceWindowFix(sess, "resolveExecutable 失败: " + ((e && e.message) || String(e)));
+      const root = process.env.SystemRoot || "C:\\Windows";
+      const fallback = join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+      if (existsSync(fallback)) { psExe = fallback; traceWindowFix(sess, "fallback -> " + psExe); }
+    }
+    if (!psExe) { traceWindowFix(sess, "无可用 PowerShell, 跳过窗口修复"); return null; }
     const scriptPath = join(sess.profileDir, "musage-show-window.ps1");
     try { writeFileSync(scriptPath, WINDOW_SHOW_PS, "utf8"); } catch (e) { return null; }
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const handle = subprocess.spawn({
           argv: [
-            "powershell.exe",
+            psExe,
             "-NoProfile",
             "-NonInteractive",
             "-ExecutionPolicy", "Bypass",
@@ -1752,7 +1772,8 @@ Write-Output ("total=" + $script:total + " hidden=" + $script:hidden + " shown="
           stdio: { stdin: "ignore", stdout: { maxBytes: 32 * 1024 }, stderr: { maxBytes: 32 * 1024 } },
           graceMs: 5000,
         });
-        await Promise.race([
+        traceWindowFix(sess, "attempt=" + attempt + " spawn pid=" + ((handle && handle.pid) || "?"));
+        const finished = await Promise.race([
           handle.waitForExit().then(function () { return true; }, function () { return true; }),
           sleepMs(10000).then(function () { return false; }),
         ]);
@@ -1761,13 +1782,16 @@ Write-Output ("total=" + $script:total + " hidden=" + $script:hidden + " shown="
           const c = handle.collected && handle.collected.stdout;
           if (c) { const r = c.readFrom(0); out = (r && r.text) || ""; }
         } catch (e) { /* 无输出 */ }
+        traceWindowFix(sess, "attempt=" + attempt + " exit=" + finished + " stdout=" + JSON.stringify(String(out).slice(0, 160)));
         const report = parseWindowVisibilityReport(out);
         if (report) {
           sess.windowVisibility = report;
           // 进程与窗口都已找到（无论是否需要修复）→ 收工; 否则等窗口创建后重试。
           if (report.pids > 0 && report.total > 0) return report;
         }
-      } catch (e) { /* 单次尝试失败 → 重试 */ }
+      } catch (e) {
+        traceWindowFix(sess, "attempt=" + attempt + " 异常: " + ((e && e.message) || String(e)));
+      }
       await sleepMs(1500);
     }
     return sess.windowVisibility || null;
