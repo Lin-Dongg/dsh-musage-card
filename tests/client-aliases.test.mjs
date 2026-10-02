@@ -48,6 +48,12 @@ test("modlens 包装剥壳后同样命中（modlens-xiaomi-token-plan-ams）", (
   assert.equal(readActiveProvider({ current: { provider: "modlens-xiaomi-token-plan-ams" } }), "xiaomi");
 });
 
+test("deepseek-account → deepseek（DSH 内置「DeepSeek Account」登录 provider；2026-10-02 实机）", () => {
+  assert.equal(readActiveProvider({ current: { provider: "deepseek-account" } }), "deepseek");
+  // modlens 包装同样可剥壳命中
+  assert.equal(readActiveProvider({ current: { provider: "modlens-deepseek-account" } }), "deepseek");
+});
+
 test("回归：既有别名不受影响", () => {
   assert.equal(readActiveProvider({ current: { provider: "zai-coding-cn" } }), "zhipu");
   assert.equal(readActiveProvider({ current: { provider: "stepfun-plan" } }), "stepfun");

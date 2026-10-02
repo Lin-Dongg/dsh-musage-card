@@ -66,6 +66,9 @@ window.__ModuleLoader__.load({
       "minimax": "minimax",
       "deepseek": "deepseek",
       "deepseek-official": "deepseek",  // DSH dsh-llm-deepseek 实际 provider id (带后缀)
+      "deepseek-account": "deepseek",   // DSH 内置「DeepSeek Account」登录 provider (2026-10-02 实机):
+                                        // 该账号钱包余额 = api.deepseek.com/user/balance（与 DEEPSEEK_API_KEY
+                                        // 同账户同端点; whale 组件「DeepSeek 余额」同链路), 故并入本组
       "kimi-coding": "kimi",
       "openrouter": "openrouter",
       "zai-coding-cn": "zhipu",

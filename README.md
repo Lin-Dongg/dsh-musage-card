@@ -13,7 +13,7 @@
 | Provider（DSH route id 变体） | 显示 | 端点 | 凭据 |
 |---|---|---|---|
 | `minimax` / `minimax-cn` / `minimax-en` | 5h / 7d 双窗口 | `api.minimaxi.com/v1/api/openplatform/coding_plan/remains` | `MINIMAX_CN_API_KEY` 等 |
-| `deepseek` / `deepseek-official` | 余额（¥ / $） | `api.deepseek.com/user/balance` | `DEEPSEEK_API_KEY` |
+| `deepseek` / `deepseek-official` / `deepseek-account` | 余额（¥ / $） | `api.deepseek.com/user/balance` | `DEEPSEEK_API_KEY` |
 | `kimi` / `kimi-coding` | 5h / 7d 双窗口 | `api.kimi.com/coding/v1/usages` | `KIMI_CODING_API_KEY` |
 | `zhipu` / `zai-coding-cn` | 5h / 7d 双窗口 | `open.bigmodel.cn/api/monitor/usage/quota/limit` | `ZAI_CODING_CN_API_KEY` |
 | `openrouter` | 余额（$） | `openrouter.ai/api/v1/credits` | `OPENROUTER_API_KEY` |
@@ -83,6 +83,15 @@
 - host 半边已扩展为 11 家（上游 5 家）
 
 ## 变更记录
+
+### v1.6.5（2026-10）DeepSeek Account 登录 provider 支持
+
+- DSH 内置的「DeepSeek Account」登录式 provider（route id `deepseek-account`，
+  模型 DeepSeek-V41-Flash / V4-Pro）此前不在别名表内 → 卡片显示「未选中支持的 provider」。
+  实测该账号的充值余额即 `api.deepseek.com/user/balance`（与 `DEEPSEEK_API_KEY` 同账户同端点，
+  whale 组件的「DeepSeek 余额」走的就是这条链路：`keyRef: DEEPSEEK_API_KEY` + 同端点），
+  已把它并入 `deepseek` 别名组 —— 选中 Account 模型时卡片显示同一份余额。
+- 测试：别名回归用例（`deepseek-account` / `modlens-deepseek-account` → `deepseek`）。
 
 ### v1.6.4（2026-10）卡片「登出」按钮
 
