@@ -77,7 +77,7 @@ const ctx = {
 // direct spawn 路径的测试降级: 注入 headless 包装的 node:child_process
 // （与 ctx.subprocess mock 同一目的——不弹窗; 仅对浏览器可执行插 --headless=new,
 //  窗口修复脚本等其它直 spawn 不受影响）。进程追踪复用 children 集合。
-host.__login.setNodeChildProcessForTests({
+const makeHeadlessChildProcess = () => ({
   spawn: (exe, args, opts) => {
     const a = Array.isArray(args) ? args.slice() : [];
     if (hasBrowser && exe === browsers[0]) a.splice(0, 0, "--headless=new");
@@ -87,6 +87,7 @@ host.__login.setNodeChildProcessForTests({
     return child;
   },
 });
+host.__login.setNodeChildProcessForTests(makeHeadlessChildProcess());
 
 host.apply(ctx);
 
@@ -175,6 +176,25 @@ test("编排: 同 profile 二次会话（stale DevToolsActivePort 回归）", { 
   await callRoute("/musage/login", "POST", "/musage/login?action=cancel");
   await waitState((s) => s && s.state === "cancelled", 15000);
   await sleep(2500);
+});
+
+test("编排: node:child_process 不可用时回退 ctx.subprocess 通道（fallback 全链）", { timeout: 90000 }, async (t) => {
+  // 审计补充（2026-10-02）: direct 通道是首选路径, 但环境可能禁用它——
+  // 回退路径（浏览器经 ctx.subprocess + 窗口修复脚本 service 兜底）此前无自动化覆盖。
+  if (!hasBrowser) { t.skip("无 Edge/Chrome，跳过"); return; }
+  host.__login.setNodeChildProcessForTests(null); // 模拟环境禁用 node:child_process
+  try {
+    const r1 = await callRoute("/musage/login", "POST", "/musage/login?action=start&provider=xiaomi");
+    assert.equal(r1.body.ok, true, JSON.stringify(r1.body));
+    const snap = await waitState(reachedWaitOrTerminal, 45000);
+    assert.equal(snap.state, "waiting", "回退路径也应到达 waiting: " + JSON.stringify(snap));
+    await callRoute("/musage/login", "POST", "/musage/login?action=cancel");
+    await waitState((s) => s && s.state === "cancelled", 15000);
+    await sleep(2500);
+    assert.equal(children.size, 0, "回退路径 cancel 后不应残留（mock spawn 追踪）");
+  } finally {
+    host.__login.setNodeChildProcessForTests(makeHeadlessChildProcess()); // 恢复 direct 通道
+  }
 });
 
 test("编排: 用户关窗 → cancelled（浏览器已关闭路径）", { timeout: 90000 }, async (t) => {

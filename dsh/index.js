@@ -1948,10 +1948,11 @@ Write-Output ("total=" + $script:total + " hidden=" + $script:hidden + " shown="
       const report = parseWindowVisibilityReport(out);
       if (report) {
         sess.windowVisibility = report;
-        // 进程已就绪（CDP 连接后属必然）→ 收工: 有窗口说明该修的已修,
-        // 无窗口（headless/特殊环境）则没有可修对象, 重试无意义。
-        // pids=0（浏览器进程尚未出现）→ 留待下一次尝试。
-        if (report.pids > 0) return report;
+        // 收工条件: 发现了窗口（该修的已修/无需修）→ 立即收工;
+        // 有进程但尚无窗口（主窗口可能还没创建 / headless 环境没有窗口）→
+        // 给一次重试机会再收工; 连进程都没有（浏览器尚未就绪）→ 继续重试。
+        if (report.pids > 0 && report.total > 0) return report;
+        if (report.pids > 0 && attempt >= 1) return report;
       }
       await sleepMs(1500);
     }

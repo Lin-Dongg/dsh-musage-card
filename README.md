@@ -91,8 +91,9 @@
   （`dsh-subprocess-local/lib/runner-launch`: `windowsHide: platform === "win32"`）——
   本意是隐藏控制台窗口，但 Windows 的启动显示状态继承让 GUI 子进程（Edge）的
   首个窗口以**隐藏状态**创建（实测 `IsWindowVisible=false`，恢复需 `ShowWindow(SW_SHOW)`）：
-  窗口自出现起在屏幕上与任务栏中都不可见——CDP 仍可连接、页面正常渲染，
-  不是「白屏」也不是「被盖住」；`Page.bringToFront` 只能改焦点、不能恢复显示；
+  窗口自出现起在屏幕上与任务栏中都不可见——CDP 仍可连接、页面正常渲染
+  （区别于历史已修的两个独立问题：MiMo SPA 白屏 v1.6.1、「被主窗盖住」v1.6.2）；
+  `Page.bringToFront` 只能改焦点、不能恢复显示；
   经该 runner 链执行的 `ShowWindow` 实测也修不动（同机对照：直接 spawn 的
   PowerShell 可修复且稳定保持）。
 - **修复**：登录浏览器改走**直接 spawn（`node:child_process`，显式 `windowsHide: false`）**
